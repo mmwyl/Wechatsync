@@ -493,7 +493,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     sendResponse({ article })
   } else if (message.type === 'OPEN_EDITOR') {
     // 打开编辑器
-    const article = extractArticle()
+    // 如果有传入的文章数据（从导入文档），直接使用；否则从当前页面提取
+    let article = message.article
+
+    // 如果没有传入文章数据，则从当前页面提取
+    if (!article) {
+      article = extractArticle()
+    }
+
     if (article) {
       // 传递平台列表和已选中的平台 ID
       openEditor(article, message.platforms || [], message.selectedPlatforms || [])

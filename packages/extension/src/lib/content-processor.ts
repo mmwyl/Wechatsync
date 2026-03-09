@@ -103,7 +103,8 @@ export function preprocessForPlatform(rawHtml: string, config: PreprocessConfig)
 
   if (config.convertSectionToDiv) {
     convertSections(container, 'div')
-  } else if (config.convertSectionToP) {
+  }
+  if (config.convertSectionToP) {
     convertSections(container, 'p')
   }
 
@@ -254,22 +255,88 @@ function processLinks(container: HTMLElement, keepDomains?: string[]): void {
 
 /**
  * 处理懒加载图片
+ * 增强版本：支持更多懒加载属性和 loading="lazy"
  */
 function processLazyImages(container: HTMLElement): void {
   const imgs = container.querySelectorAll('img')
-  const lazySrcAttrs = ['data-src', 'data-original', 'data-actualsrc', '_src']
+
+  // 扩展懒加载属性列表，支持更多平台的懒加载实现
+  const lazySrcAttrs = [
+    'data-src',
+    'data-original',
+    'data-actualsrc',
+    '_src',
+    'data-lazy-src',
+    'data-original-src',
+    'data-load-src',
+    'data-img-src',
+    'data-thumb-src',
+    'data-small-src',
+    'data-medium-src',
+    'data-large-src',
+    'data-srcset',
+    'data-lazyloaded',
+  ]
 
   imgs.forEach((img) => {
-    for (const attr of lazySrcAttrs) {
-      const lazySrc = img.getAttribute(attr)
-      if (lazySrc && !lazySrc.startsWith('data:image/svg')) {
-        if (!img.src || img.src.startsWith('data:image/svg')) {
-          img.src = lazySrc
+    // 1. 处理 data-* 懒加载属性
+    let foundSrc = false
+
+    // 首先检查是否有 loading="lazy" 属性，如果有，尝试获取真实 src
+    if (img.getAttribute('loading') === 'lazy' && img.src && !img.src.startsWith('data:')) {
+      foundSrc = true
+    }
+
+    // 检查各种 data 属性
+    if (!foundSrc) {
+      for (const attr of lazySrcAttrs) {
+        const lazySrc = img.getAttribute(attr)
+        if (lazySrc && !lazySrc.startsWith('data:image/svg') && lazySrc.startsWith('http')) {
+          if (!img.src || img.src.startsWith('data:image/svg') || img.src === 'about:blank') {
+            img.src = lazySrc
+            foundSrc = true
+          }
+          break
         }
-        break
       }
     }
+
+    // 2. 处理 srcset 属性（响应式图片）
+    const srcset = img.getAttribute('data-srcset') || img.getAttribute('srcset')
+    if (srcset && !foundSrc) {
+      // 从 srcset 中提取第一个图片 URL
+      const firstSrc = srcset.split(',')[0]?.trim().split(' ')[0]
+      if (firstSrc && firstSrc.startsWith('http')) {
+        img.src = firstSrc
+        // 保留 srcset 以便后续处理
+        img.setAttribute('data-original-srcset', srcset)
+      }
+    }
+
+    // 3. 移除 loading 属性（处理完后不再需要）
+    img.removeAttribute('loading')
+
+    // 4. 清理懒加载属性
     lazySrcAttrs.forEach(attr => img.removeAttribute(attr))
+  })
+
+  // 处理 picture 元素中的 source 懒加载
+  const pictures = container.querySelectorAll('picture')
+  pictures.forEach(picture => {
+    const sources = picture.querySelectorAll('source')
+    sources.forEach(source => {
+      const srcset = source.getAttribute('data-srcset') || source.getAttribute('srcset')
+      if (srcset) {
+        source.setAttribute('srcset', srcset)
+        source.removeAttribute('data-srcset')
+      }
+    })
+
+    // 确保 picture 中的 img 也被处理
+    const img = picture.querySelector('img')
+    if (img) {
+      processLazyImages(picture as HTMLElement)
+    }
   })
 }
 
@@ -498,10 +565,32 @@ export function preprocessCodeBlocks(container: HTMLElement): void {
 
 /**
  * 移除没有有效 src 的 img 标签（src 缺失或为空字符串）
+ * 改进：保留可能有懒加载属性的图片
  */
 function removeEmptyImages(container: HTMLElement): void {
+  // 懒加载属性列表
+  const lazyAttrs = [
+    'data-src',
+    'data-original',
+    'data-actualsrc',
+    '_src',
+    'data-lazy-src',
+    'data-original-src',
+    'data-load-src',
+    'data-img-src',
+    'data-srcset',
+    'loading',
+  ]
+
   container.querySelectorAll('img').forEach((img) => {
-    if (!img.src || img.src === window.location.href) {
+    // 检查是否有懒加载属性，如果有则不删除
+    const hasLazyAttr = lazyAttrs.some(attr => img.hasAttribute(attr))
+    if (hasLazyAttr) {
+      return // 保留，等待懒加载处理
+    }
+
+    // 检查是否有有效 src
+    if (!img.src || img.src === window.location.href || img.src === 'about:blank') {
       img.remove()
     }
   })

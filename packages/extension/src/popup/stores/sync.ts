@@ -151,6 +151,7 @@ interface SyncState {
   updateDetailProgress: (progress: PlatformProgress) => void
   clearSyncState: () => Promise<void>
   updateArticle: (updates: Partial<Article>) => void
+  setArticle: (article: Article) => void
   clearRateLimitWarning: () => void
 }
 
@@ -245,6 +246,10 @@ export const useSyncStore = create<SyncState>((set, get) => ({
         },
       })
     }
+  },
+
+  setArticle: (article) => {
+    set({ article })
   },
 
   loadPlatforms: async () => {

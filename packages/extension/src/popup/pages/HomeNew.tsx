@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Settings, RefreshCw, FileText, Loader2, Check, X, ExternalLink, ChevronDown, ChevronUp, Plus, Clock, Pencil, Download } from 'lucide-react'
+import { Settings, RefreshCw, FileText, Loader2, Check, X, ExternalLink, ChevronDown, ChevronUp, Plus, Clock, Pencil, Download, FileUp } from 'lucide-react'
 import { useSyncStore } from '../stores/sync'
 import { PlatformGrid, type Platform as GridPlatform } from '../components/PlatformGrid'
 import { SettingsDrawer } from '../components/SettingsDrawer'
@@ -8,6 +8,7 @@ import { cn } from '@/lib/utils'
 import { trackPageView, trackFeatureDiscovery } from '../../lib/analytics'
 import { createLogger } from '../../lib/logger'
 import { getCachedUpdateInfo, dismissUpdate, type UpdateCheckResult } from '../../lib/version-check'
+import { parseDocument, FILE_ACCEPT } from '../../lib/document-importer'
 
 const logger = createLogger('HomeNew')
 
@@ -35,6 +36,7 @@ export function HomeNew() {
     retryFailed,
     reset,
     checkRateLimit,
+    setArticle,
   } = useSyncStore()
 
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -43,6 +45,8 @@ export function HomeNew() {
   const [allPlatforms, setAllPlatforms] = useState<GridPlatform[]>([])
   const [refreshing, setRefreshing] = useState(false)
   const [updateInfo, setUpdateInfo] = useState<UpdateCheckResult | null>(null)
+  const [isImporting, setIsImporting] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   // 加载数据（优先恢复同步状态）
   useEffect(() => {
@@ -92,6 +96,60 @@ export function HomeNew() {
     } finally {
       setRefreshing(false)
     }
+  }
+
+  // 处理文件导入
+  const handleFileImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    setIsImporting(true)
+    try {
+      const parsed = await parseDocument(file)
+
+      const importedArticle = {
+        title: parsed.title,
+        content: parsed.content,
+        html: parsed.content,
+        markdown: parsed.markdown || parsed.content,
+        summary: parsed.content.replace(/<[^>]+>/g, '').slice(0, 100),
+      }
+
+      // 并行执行：保存文章到 storage 和获取平台列表
+      const [storageResponse] = await Promise.all([
+        chrome.runtime.sendMessage({ type: 'CHECK_ALL_AUTH', payload: { forceRefresh: false } }),
+        chrome.storage.local.set({ pendingArticle: importedArticle }),
+      ])
+
+      const platforms = storageResponse?.platforms || []
+
+      // 保存平台信息到 storage
+      await chrome.storage.local.set({ editorPlatforms: platforms })
+
+      logger.info('Document imported, opening editor in new tab')
+
+      // 打开新标签页显示编辑器
+      const editorUrl = chrome.runtime.getURL('src/editor/index.html')
+      await chrome.tabs.create({ url: editorUrl })
+
+      // 关闭 popup
+      window.close()
+    } catch (error) {
+      logger.error('Failed to import document:', error)
+      setRateLimitWarning(`导入失败: ${error instanceof Error ? error.message : '未知错误'}`)
+      setTimeout(() => setRateLimitWarning(null), 5000)
+    } finally {
+      setIsImporting(false)
+      // 清空 input 以便再次选择相同文件
+      if (fileInputRef.current) {
+        fileInputRef.current.value = ''
+      }
+    }
+  }
+
+  // 打开文件选择器
+  const handleImportClick = () => {
+    fileInputRef.current?.click()
   }
 
   // 选择状态
@@ -209,6 +267,34 @@ export function HomeNew() {
             )}
           </div>
         )}
+
+        {/* 导入文档按钮 */}
+        <div className="flex items-center gap-2">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept={FILE_ACCEPT}
+            onChange={handleFileImport}
+            className="hidden"
+          />
+          <button
+            onClick={handleImportClick}
+            disabled={isImporting || status === 'syncing'}
+            className={cn(
+              'flex-1 py-2 px-3 rounded-lg border border-dashed border-gray-300 dark:border-gray-600',
+              'flex items-center justify-center gap-2 text-sm text-gray-600 dark:text-gray-400',
+              'hover:bg-gray-50 dark:hover:bg-gray-800 hover:border-gray-400 transition-colors',
+              (isImporting || status === 'syncing') && 'opacity-50 cursor-not-allowed'
+            )}
+          >
+            {isImporting ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <FileUp className="w-4 h-4" />
+            )}
+            导入文档 (Word/Markdown)
+          </button>
+        </div>
 
         {/* 文章预览 */}
         <div className="bg-muted/50 rounded-lg p-3">

@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { X, Check, Loader2, ExternalLink } from 'lucide-react'
+import { X, Check, Loader2, ExternalLink, FileUp, Bold, Italic, Underline, List, ListOrdered, AlignLeft, AlignCenter, AlignRight, Quote, Code, Heading1, Heading2, Heading3 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { createLogger } from '../lib/logger'
+import { parseDocument, FILE_ACCEPT, type ParsedDocument } from '../lib/document-importer'
 
 const logger = createLogger('Editor')
 
@@ -62,6 +63,8 @@ export function EditorApp() {
   const [rateLimitWarning, setRateLimitWarning] = useState<string | null>(null)
   const [platformProgress, setPlatformProgress] = useState<Map<string, PlatformProgress>>(new Map())
   const [currentSyncId, setCurrentSyncId] = useState<string | null>(null)
+  const [isImporting, setIsImporting] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const currentSyncIdRef = useRef<string | null>(null)
 
   // 保持 ref 与 state 同步
@@ -71,6 +74,101 @@ export function EditorApp() {
 
   const titleRef = useRef<HTMLHeadingElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
+
+  // 富文本工具栏函数
+  const execCommand = (command: string, value?: string) => {
+    document.execCommand(command, false, value)
+    contentRef.current?.focus()
+  }
+
+  const handleBold = () => execCommand('bold')
+  const handleItalic = () => execCommand('italic')
+  const handleUnderline = () => execCommand('underline')
+  const handleBulletList = () => execCommand('insertUnorderedList')
+  const handleNumberedList = () => execCommand('insertOrderedList')
+  const handleAlignLeft = () => execCommand('justifyLeft')
+  const handleAlignCenter = () => execCommand('justifyCenter')
+  const handleAlignRight = () => execCommand('justifyRight')
+  const handleQuote = () => execCommand('formatBlock', 'blockquote')
+  const handleCode = () => execCommand('formatBlock', 'pre')
+  const handleHeading1 = () => execCommand('formatBlock', 'h1')
+  const handleHeading2 = () => execCommand('formatBlock', 'h2')
+  const handleHeading3 = () => execCommand('formatBlock', 'h3')
+
+  // 从 storage 加载文章数据（从 popup 打开时）
+  useEffect(() => {
+    const loadFromStorage = async () => {
+      try {
+        const storage = await chrome.storage.local.get(['pendingArticle', 'editorPlatforms'])
+
+        if (storage.pendingArticle) {
+          logger.info('Loading article from storage:', storage.pendingArticle.title)
+          setArticle(storage.pendingArticle)
+
+          // 设置初始内容到编辑器
+          if (contentRef.current && storage.pendingArticle.content) {
+            contentRef.current.innerHTML = storage.pendingArticle.content
+          }
+
+          // 清除 storage
+          await chrome.storage.local.remove(['pendingArticle'])
+        }
+
+        if (storage.editorPlatforms) {
+          logger.info('Loading platforms from storage:', storage.editorPlatforms.length)
+          setPlatforms(storage.editorPlatforms.map((p: any) => ({
+            id: p.id,
+            name: p.name,
+            icon: p.icon,
+            isAuthenticated: p.isAuthenticated,
+            username: p.username,
+          })))
+
+          // 清除 storage
+          await chrome.storage.local.remove(['editorPlatforms'])
+        }
+      } catch (error) {
+        logger.error('Failed to load from storage:', error)
+      }
+    }
+
+    loadFromStorage()
+  }, [])
+
+  // 监听来自 background 的消息（独立标签页模式）
+  useEffect(() => {
+    const handleRuntimeMessage = (message: any) => {
+      logger.debug('Received runtime message:', message)
+
+      if (message.type === 'SYNC_PROGRESS') {
+        if (message.result) {
+          setResults(prev => [...prev, message.result])
+        }
+      } else if (message.type === 'SYNC_COMPLETE') {
+        setStatus('completed')
+        if (message.results) {
+          setResults(message.results)
+        }
+      } else if (message.type === 'SYNC_ERROR') {
+        setError(message.error || '同步失败')
+        setStatus('idle')
+      } else if (message.type === 'IMAGE_PROGRESS') {
+        setPlatformProgress(prev => {
+          const next = new Map(prev)
+          next.set(message.platform, {
+            platform: message.platform,
+            platformName: message.platform,
+            stage: 'uploading_images',
+            imageProgress: { current: message.current, total: message.total },
+          })
+          return next
+        })
+      }
+    }
+
+    chrome.runtime.onMessage.addListener(handleRuntimeMessage)
+    return () => chrome.runtime.onMessage.removeListener(handleRuntimeMessage)
+  }, [])
 
   // 接收来自父窗口的消息
   useEffect(() => {
@@ -178,6 +276,46 @@ export function EditorApp() {
     window.parent.postMessage(JSON.stringify({ type: 'CLOSE_EDITOR' }), '*')
   }, [])
 
+  // 打开文件选择器
+  const handleImportClick = () => {
+    fileInputRef.current?.click()
+  }
+
+  // 处理文件导入
+  const handleFileImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    setIsImporting(true)
+    try {
+      const parsed = await parseDocument(file) as ParsedDocument
+      setArticle(prev => prev ? {
+        ...prev,
+        title: parsed.title || prev.title,
+        content: parsed.content || prev.content,
+      } : null)
+
+      // 更新编辑器内容
+      if (contentRef.current) {
+        contentRef.current.innerHTML = parsed.content || ''
+      }
+      if (titleRef.current) {
+        titleRef.current.innerText = parsed.title || ''
+      }
+
+      logger.info('Document imported:', file.name)
+    } catch (error) {
+      logger.error('Failed to import document:', error)
+      setError(`导入失败: ${error instanceof Error ? error.message : '未知错误'}`)
+    } finally {
+      setIsImporting(false)
+      // 清空 input 以便再次选择相同文件
+      if (fileInputRef.current) {
+        fileInputRef.current.value = ''
+      }
+    }
+  }
+
   // 切换平台选中状态
   const togglePlatform = (id: string) => {
     setSelectedPlatforms(prev => {
@@ -194,7 +332,7 @@ export function EditorApp() {
   }
 
   // 开始同步
-  const handleSync = () => {
+  const handleSync = async () => {
     if (!article || selectedPlatforms.size === 0) return
 
     // 获取编辑后的内容
@@ -204,7 +342,7 @@ export function EditorApp() {
       content: contentRef.current?.innerHTML || article.content,
     }
 
-    // 生成 syncId（在发送消息前设置，以便立即过滤消息）
+    // 生成 syncId
     const syncId = `sync_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
     setCurrentSyncId(syncId)
 
@@ -213,13 +351,23 @@ export function EditorApp() {
     setError(null)
     setPlatformProgress(new Map())
 
-    // 发送同步请求到父窗口（带上 syncId）
-    window.parent.postMessage(JSON.stringify({
-      type: 'START_SYNC',
-      article: editedArticle,
-      platforms: Array.from(selectedPlatforms),
-      syncId,
-    }), '*')
+    try {
+      // 发送同步请求到 background（通过 chrome.runtime.sendMessage）
+      const response = await chrome.runtime.sendMessage({
+        type: 'SYNC_ARTICLE_FROM_EDITOR',
+        payload: {
+          article: editedArticle,
+          platforms: Array.from(selectedPlatforms),
+          syncId,
+        }
+      })
+
+      console.log('Sync response:', response)
+    } catch (error) {
+      console.error('Sync error:', error)
+      setError('同步失败: ' + (error instanceof Error ? error.message : '未知错误'))
+      setStatus('idle')
+    }
   }
 
   // 重试失败项
@@ -273,6 +421,15 @@ export function EditorApp() {
             <img src={chrome.runtime.getURL('assets/icon-48.png')} alt="Logo" className="w-6 h-6" />
             <span className="font-medium text-gray-700">同步助手 - 编辑模式</span>
           </div>
+
+          {/* 隐藏的文件输入 */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept={FILE_ACCEPT}
+            onChange={handleFileImport}
+            className="hidden"
+          />
 
           <div className="flex items-center gap-2">
             {status === 'idle' && (
@@ -403,6 +560,72 @@ export function EditorApp() {
             )
           })}
         </div>
+
+        {/* 富文本工具栏 - 居中显示 */}
+        <div className="px-6 py-3 bg-white border-t flex items-center justify-center gap-1 flex-wrap">
+          <button onClick={handleBold} className="p-1.5 rounded hover:bg-gray-100" title="粗体">
+            <Bold className="w-4 h-4" />
+          </button>
+          <button onClick={handleItalic} className="p-1.5 rounded hover:bg-gray-100" title="斜体">
+            <Italic className="w-4 h-4" />
+          </button>
+          <button onClick={handleUnderline} className="p-1.5 rounded hover:bg-gray-100" title="下划线">
+            <Underline className="w-4 h-4" />
+          </button>
+          <div className="w-px h-5 bg-gray-300 mx-1" />
+          <button onClick={handleHeading1} className="p-1.5 rounded hover:bg-gray-100 text-xs font-bold" title="标题1">
+            H1
+          </button>
+          <button onClick={handleHeading2} className="p-1.5 rounded hover:bg-gray-100 text-xs font-bold" title="标题2">
+            H2
+          </button>
+          <button onClick={handleHeading3} className="p-1.5 rounded hover:bg-gray-100 text-xs font-bold" title="标题3">
+            H3
+          </button>
+          <div className="w-px h-5 bg-gray-300 mx-1" />
+          <button onClick={handleBulletList} className="p-1.5 rounded hover:bg-gray-100" title="无序列表">
+            <List className="w-4 h-4" />
+          </button>
+          <button onClick={handleNumberedList} className="p-1.5 rounded hover:bg-gray-100" title="有序列表">
+            <ListOrdered className="w-4 h-4" />
+          </button>
+          <div className="w-px h-5 bg-gray-300 mx-1" />
+          <button onClick={handleAlignLeft} className="p-1.5 rounded hover:bg-gray-100" title="左对齐">
+            <AlignLeft className="w-4 h-4" />
+          </button>
+          <button onClick={handleAlignCenter} className="p-1.5 rounded hover:bg-gray-100" title="居中">
+            <AlignCenter className="w-4 h-4" />
+          </button>
+          <button onClick={handleAlignRight} className="p-1.5 rounded hover:bg-gray-100" title="右对齐">
+            <AlignRight className="w-4 h-4" />
+          </button>
+          <div className="w-px h-5 bg-gray-300 mx-1" />
+          <button onClick={handleQuote} className="p-1.5 rounded hover:bg-gray-100" title="引用">
+            <Quote className="w-4 h-4" />
+          </button>
+          <button onClick={handleCode} className="p-1.5 rounded hover:bg-gray-100" title="代码">
+            <Code className="w-4 h-4" />
+          </button>
+          <div className="w-px h-5 bg-gray-300 mx-1" />
+          <button
+            onClick={handleImportClick}
+            disabled={isImporting || status === 'syncing'}
+            className={cn(
+              'px-2 py-1 rounded text-xs flex items-center gap-1 transition-colors',
+              status === 'syncing'
+                ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                : 'bg-blue-50 text-blue-600 hover:bg-blue-100'
+            )}
+            title="导入 Word 或 Markdown 文档"
+          >
+            {isImporting ? (
+              <Loader2 className="w-3 h-3 animate-spin" />
+            ) : (
+              <FileUp className="w-3 h-3" />
+            )}
+            导入
+          </button>
+        </div>
       </header>
 
       {/* 频率限制警告 */}
@@ -422,7 +645,7 @@ export function EditorApp() {
       )}
 
       {/* 文章内容区 */}
-      <main className="pt-28 pb-16">
+      <main className="pt-48 pb-16">
         <article className="w-full max-w-4xl mx-auto bg-white shadow-sm px-12 py-10" style={{ minHeight: 'calc(100vh - 7rem)' }}>
           {/* 封面图 */}
           {article.cover && (
