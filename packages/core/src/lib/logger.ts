@@ -53,7 +53,8 @@ export function getLoggerConfig(): LoggerConfig {
 export function createLogger(prefix: string): Logger {
   const shouldLog = (level: LogLevel): boolean => {
     if (!globalConfig.enabled) return false
-    return LOG_LEVELS[level] >= LOG_LEVELS[globalConfig.level]
+    const currentLevel = globalConfig.level ?? 'info'
+    return LOG_LEVELS[level] >= LOG_LEVELS[currentLevel]
   }
 
   return {
