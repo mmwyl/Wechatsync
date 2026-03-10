@@ -400,7 +400,7 @@ function removeLineNumberSiblings(pre: Element): void {
  * 可作为代码行容器的标签
  * 这些标签通常用于包裹单行代码
  */
-const LINE_CONTAINER_TAGS = new Set(['CODE', 'DIV', 'SPAN', 'P', 'LI'])
+const LINE_CONTAINER_TAGS = new Set(['CODE', 'DIV', 'P', 'LI'])
 
 /**
  * 检查子元素是否构成有效的"多行结构"
@@ -458,7 +458,10 @@ function isValidLineStructure(children: Element[]): boolean {
 function findLinesContainer(el: Element, depth: number): Element | null {
   if (depth > 4) return null
 
-  const children = Array.from(el.children)
+  // 过滤掉被隐藏的行号元素
+  const children = Array.from(el.children).filter(child => {
+    return (child as HTMLElement).style?.display !== 'none'
+  })
 
   // 检查当前元素是否是有效的多行容器
   if (isValidLineStructure(children)) {
@@ -502,6 +505,10 @@ function processCodeBlocks(container: HTMLElement): void {
     try {
       // 跳过已经被 backupAndSimplifyCodeBlocks 处理过的代码块
       if (pre.hasAttribute('data-code-simplified')) {
+        pre.removeAttribute('class')
+        pre.removeAttribute('style')
+        pre.removeAttribute('data-lang')
+        pre.removeAttribute('data-code-simplified')
         return
       }
 
@@ -516,6 +523,21 @@ function processCodeBlocks(container: HTMLElement): void {
 
       let newHtml: string
 
+      // 提取语言
+      let lang = pre.getAttribute('data-lang')
+      if (!lang) {
+        const code = pre.querySelector('code')
+        if (code) {
+          const match = code.className.match(/language-(\w+)/)
+          if (match) lang = match[1]
+        }
+      }
+      if (!lang) {
+        const match = pre.className.match(/language-(\w+)/)
+        if (match) lang = match[1]
+      }
+      if (!lang) lang = 'text'
+
       if (linesContainer) {
         // 多行容器：每个子元素是一行代码
         const lines: string[] = []
@@ -529,7 +551,7 @@ function processCodeBlocks(container: HTMLElement): void {
         // 注意：如果代码块未经 backupAndSimplifyCodeBlocks 预处理，
         // 在 detached DOM 上 innerText 可能无法正确处理 <br> 等
         const text = pre.innerText || pre.textContent || ''
-        newHtml = `<code>${escapeHtml(text)}</code>`
+        newHtml = `<code class="language-${lang}">${escapeHtml(text)}</code>`
       }
 
       // 清理：移除开头结尾空行
@@ -1013,6 +1035,21 @@ export function backupAndSimplifyCodeBlocks(root: Element = document.body): Elem
       // 查找代码行容器（与 processCodeBlocks 相同的逻辑）
       const linesContainer = findCodeLinesContainer(pre)
 
+      // 尝试提取语言
+      let lang = pre.getAttribute('data-lang')
+      if (!lang) {
+        const code = pre.querySelector('code')
+        if (code) {
+          const match = code.className.match(/language-(\w+)/)
+          if (match) lang = match[1]
+        }
+      }
+      if (!lang) {
+        const match = pre.className.match(/language-(\w+)/)
+        if (match) lang = match[1]
+      }
+      if (!lang) lang = 'text'
+
       let cleanedText: string
 
       if (linesContainer) {
@@ -1054,7 +1091,7 @@ export function backupAndSimplifyCodeBlocks(root: Element = document.body): Elem
       })
 
       // 替换为纯文本，添加标记表示已处理
-      pre.innerHTML = `<code>${escapeHtml(cleanedText)}</code>`
+      pre.innerHTML = `<code class="language-${lang}">${escapeHtml(cleanedText)}</code>`
       pre.setAttribute('data-code-simplified', 'true')
     } catch (e) {
       logger.error('[backupAndSimplifyCodeBlocks] error:', e)

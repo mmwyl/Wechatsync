@@ -286,7 +286,7 @@ function addExtensionRules(turndownService: TurndownService): void {
   // figure 元素 - 直接透传内容（常包裹 table）
   turndownService.addRule('figure', {
     filter: 'figure',
-    replacement: function(content) {
+    replacement: function (content) {
       return content
     }
   })
@@ -294,7 +294,7 @@ function addExtensionRules(turndownService: TurndownService): void {
   // figcaption 元素 - 转为斜体文本
   turndownService.addRule('figcaption', {
     filter: 'figcaption',
-    replacement: function(content) {
+    replacement: function (content) {
       return content ? '\n*' + content.trim() + '*\n' : ''
     }
   })
@@ -302,7 +302,7 @@ function addExtensionRules(turndownService: TurndownService): void {
   // 表格单元格
   turndownService.addRule('tableCell', {
     filter: ['th', 'td'],
-    replacement: function(content, node) {
+    replacement: function (content, node) {
       return cell(content, node as Element)
     }
   })
@@ -310,7 +310,7 @@ function addExtensionRules(turndownService: TurndownService): void {
   // 表格行
   turndownService.addRule('tableRow', {
     filter: 'tr',
-    replacement: function(content, node) {
+    replacement: function (content, node) {
       const tr = node as Element
       let borderCells = ''
       const alignMap: Record<string, string> = { left: ':--', right: '--:', center: ':-:' }
@@ -335,7 +335,7 @@ function addExtensionRules(turndownService: TurndownService): void {
 
   // 表格
   turndownService.addRule('table', {
-    filter: function(node) {
+    filter: function (node) {
       try {
         if (node.nodeName !== 'TABLE') return false
         const table = node as Element
@@ -347,7 +347,7 @@ function addExtensionRules(turndownService: TurndownService): void {
         return false
       }
     },
-    replacement: function(content) {
+    replacement: function (content) {
       // 确保没有空行
       content = content.replace(/\n\n/g, '\n')
       return '\n\n' + content + '\n\n'
@@ -357,7 +357,7 @@ function addExtensionRules(turndownService: TurndownService): void {
   // 表格区段
   turndownService.addRule('tableSection', {
     filter: ['thead', 'tbody', 'tfoot'],
-    replacement: function(content) {
+    replacement: function (content) {
       return content
     }
   })
@@ -365,7 +365,7 @@ function addExtensionRules(turndownService: TurndownService): void {
   // 代码块
   turndownService.addRule('preCode', {
     filter: ['pre'],
-    replacement: function(_content, node) {
+    replacement: function (_content, node) {
       const pre = node as HTMLPreElement
 
       // 尝试获取语言（多种来源）
@@ -410,7 +410,7 @@ function addExtensionRules(turndownService: TurndownService): void {
         })
         text = lines.join('\n')
       } else {
-        text = pre.innerText || ''
+        text = pre.textContent || pre.innerText || ''
       }
 
       // 清理文本
@@ -444,7 +444,7 @@ function addExtensionRules(turndownService: TurndownService): void {
   })
 
   // 保留没有表头的表格（作为 HTML）
-  turndownService.keep(function(node) {
+  turndownService.keep(function (node) {
     try {
       if (node.nodeName !== 'TABLE') return false
       const table = node as Element
@@ -679,7 +679,7 @@ function convertTables(html: string): string {
 
           // 提取对齐方式
           const alignMatch = attrs.match(/align=["']?(left|center|right)["']?/i) ||
-                            attrs.match(/style=["'][^"']*text-align:\s*(left|center|right)/i)
+            attrs.match(/style=["'][^"']*text-align:\s*(left|center|right)/i)
           const align = alignMatch ? alignMatch[1].toLowerCase() : ''
           rowAligns.push(align)
 
