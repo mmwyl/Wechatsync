@@ -3,7 +3,8 @@ import { X, Check, Loader2, ExternalLink, FileUp, Bold, Italic, Underline, List,
 import { cn } from '@/lib/utils'
 import { createLogger } from '../lib/logger'
 import { parseDocument, FILE_ACCEPT, type ParsedDocument } from '../lib/document-importer'
-
+import { htmlToMarkdownNative } from '@wechatsync/core'
+import { preprocessForPlatform, preprocessContentDOM, type PreprocessResult } from '../lib/content-processor'
 const logger = createLogger('Editor')
 
 interface Article {
@@ -336,11 +337,7 @@ export function EditorApp() {
     if (!article || selectedPlatforms.size === 0) return
 
     // 获取编辑后的内容
-    const editedArticle = {
-      ...article,
-      title: titleRef.current?.innerText || article.title,
-      content: contentRef.current?.innerHTML || article.content,
-    }
+    const rawHtml = contentRef.current?.innerHTML || article.content || ''
 
     // 生成 syncId
     const syncId = `sync_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
@@ -352,12 +349,49 @@ export function EditorApp() {
     setPlatformProgress(new Map())
 
     try {
+      const platformsArr = Array.from(selectedPlatforms)
+
+      // 获取平台预处理配置
+      const configResponse = await chrome.runtime.sendMessage({
+        type: 'GET_PREPROCESS_CONFIGS',
+        platforms: platformsArr,
+      })
+      const configs = configResponse?.configs || {}
+
+      // 为选中平台逐一进行本地预处理
+      const platformContents: Record<string, PreprocessResult> = {}
+      for (const platformId of platformsArr) {
+        const config = configs[platformId]
+        if (config) {
+          platformContents[platformId] = preprocessForPlatform(rawHtml, config)
+        } else {
+          // 没有配置的平台使用默认处理
+          const tempDiv = document.createElement('div')
+          tempDiv.innerHTML = rawHtml
+          preprocessContentDOM(tempDiv)
+          const html = tempDiv.innerHTML
+          platformContents[platformId] = {
+            html,
+            markdown: htmlToMarkdownNative(html),
+          }
+        }
+      }
+
+      const editedArticle = {
+        ...article,
+        title: titleRef.current?.innerText || article.title,
+        content: rawHtml,
+        html: rawHtml,
+        markdown: htmlToMarkdownNative(rawHtml),
+        platformContents,
+      }
+
       // 发送同步请求到 background（通过 chrome.runtime.sendMessage）
       const response = await chrome.runtime.sendMessage({
         type: 'SYNC_ARTICLE_FROM_EDITOR',
         payload: {
           article: editedArticle,
-          platforms: Array.from(selectedPlatforms),
+          platforms: platformsArr,
           syncId,
         }
       })
@@ -371,15 +405,11 @@ export function EditorApp() {
   }
 
   // 重试失败项
-  const handleRetry = () => {
+  const handleRetry = async () => {
     const failedPlatforms = results.filter(r => !r.success).map(r => r.platform)
     if (failedPlatforms.length === 0) return
 
-    const editedArticle = {
-      ...article!,
-      title: titleRef.current?.innerText || article!.title,
-      content: contentRef.current?.innerHTML || article!.content,
-    }
+    const rawHtml = contentRef.current?.innerHTML || article!.content || ''
 
     // 生成新的 syncId
     const syncId = `sync_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
@@ -389,12 +419,52 @@ export function EditorApp() {
     setResults(prev => prev.filter(r => r.success))
     setPlatformProgress(new Map()) // 清空进度
 
-    window.parent.postMessage(JSON.stringify({
-      type: 'START_SYNC',
-      article: editedArticle,
-      platforms: failedPlatforms,
-      syncId,
-    }), '*')
+    try {
+      const configResponse = await chrome.runtime.sendMessage({
+        type: 'GET_PREPROCESS_CONFIGS',
+        platforms: failedPlatforms,
+      })
+      const configs = configResponse?.configs || {}
+
+      const platformContents: Record<string, PreprocessResult> = {}
+      for (const platformId of failedPlatforms) {
+        const config = configs[platformId]
+        if (config) {
+          platformContents[platformId] = preprocessForPlatform(rawHtml, config)
+        } else {
+          const tempDiv = document.createElement('div')
+          tempDiv.innerHTML = rawHtml
+          preprocessContentDOM(tempDiv)
+          const html = tempDiv.innerHTML
+          platformContents[platformId] = {
+            html,
+            markdown: htmlToMarkdownNative(html),
+          }
+        }
+      }
+
+      const editedArticle = {
+        ...article!,
+        title: titleRef.current?.innerText || article!.title,
+        content: rawHtml,
+        html: rawHtml,
+        markdown: htmlToMarkdownNative(rawHtml),
+        platformContents,
+      }
+
+      await chrome.runtime.sendMessage({
+        type: 'SYNC_ARTICLE_FROM_EDITOR',
+        payload: {
+          article: editedArticle,
+          platforms: failedPlatforms,
+          syncId,
+        }
+      })
+    } catch (error) {
+      console.error('Retry sync error:', error)
+      setError('重试失败: ' + (error instanceof Error ? error.message : '未知错误'))
+      setStatus('idle')
+    }
   }
 
   const authenticatedPlatforms = platforms.filter(p => p.isAuthenticated)

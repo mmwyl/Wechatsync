@@ -9,6 +9,8 @@ dist
 !.env.example
 coverage
 *.zip
+dist.crx
+dist.pem
 
 # IDE
 .vscode/*

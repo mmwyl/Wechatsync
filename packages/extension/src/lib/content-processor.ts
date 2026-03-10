@@ -291,7 +291,7 @@ function processLazyImages(container: HTMLElement): void {
     if (!foundSrc) {
       for (const attr of lazySrcAttrs) {
         const lazySrc = img.getAttribute(attr)
-        if (lazySrc && !lazySrc.startsWith('data:image/svg') && lazySrc.startsWith('http')) {
+        if (lazySrc && !lazySrc.startsWith('data:image/svg')) {
           if (!img.src || img.src.startsWith('data:image/svg') || img.src === 'about:blank') {
             img.src = lazySrc
             foundSrc = true
@@ -306,7 +306,7 @@ function processLazyImages(container: HTMLElement): void {
     if (srcset && !foundSrc) {
       // 从 srcset 中提取第一个图片 URL
       const firstSrc = srcset.split(',')[0]?.trim().split(' ')[0]
-      if (firstSrc && firstSrc.startsWith('http')) {
+      if (firstSrc && !firstSrc.startsWith('data:image/svg')) {
         img.src = firstSrc
         // 保留 srcset 以便后续处理
         img.setAttribute('data-original-srcset', srcset)
@@ -815,7 +815,7 @@ function compactHtml(container: HTMLElement): void {
       // 在块级元素之间的空白可以移除
       if (parent && parent.nodeName !== 'PRE' && parent.nodeName !== 'CODE') {
         if ((!prev || prev.nodeType === Node.ELEMENT_NODE) &&
-            (!next || next.nodeType === Node.ELEMENT_NODE)) {
+          (!next || next.nodeType === Node.ELEMENT_NODE)) {
           nodesToRemove.push(node)
         }
       }
@@ -1003,7 +1003,7 @@ export function backupAndSimplifyCodeBlocks(root: Element = document.body): Elem
       const gutterDisplays: string[] = []
       gutterEls.forEach((el, i) => {
         gutterDisplays[i] = (el as HTMLElement).style.display
-        ;(el as HTMLElement).style.display = 'none'
+          ; (el as HTMLElement).style.display = 'none'
       })
 
       // 使用结构检测移除未知的行号元素（临时）
@@ -1032,7 +1032,7 @@ export function backupAndSimplifyCodeBlocks(root: Element = document.body): Elem
 
       // 恢复行号显示
       gutterEls.forEach((el, i) => {
-        ;(el as HTMLElement).style.display = gutterDisplays[i]
+        ; (el as HTMLElement).style.display = gutterDisplays[i]
       })
 
       // 清理首尾空白
