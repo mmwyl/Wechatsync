@@ -538,38 +538,49 @@ function processCodeBlocks(container: HTMLElement): void {
       }
       if (!lang) lang = 'text'
 
+      let plainText: string
+
       if (linesContainer) {
         // 多行容器：每个子元素是一行代码
         const lines: string[] = []
         Array.from(linesContainer.children).forEach((child) => {
           const text = child.textContent || ''
-          lines.push(escapeHtml(text))
+          lines.push(text)
         })
-        newHtml = lines.join('\n')
+        plainText = lines.join('\n')
       } else {
-        // 普通格式：用 innerText 提取（保留换行）
-        // 注意：如果代码块未经 backupAndSimplifyCodeBlocks 预处理，
-        // 在 detached DOM 上 innerText 可能无法正确处理 <br> 等
-        const text = pre.innerText || pre.textContent || ''
-        newHtml = `<code class="language-${lang}">${escapeHtml(text)}</code>`
+        // 普通格式：使用 clone 节点并用换行符替换 <br> 标签，从而安全获得格式纯净的 textContent
+        const code = pre.querySelector('code')
+        const targetEl = (code || pre) as HTMLElement
+        const clone = targetEl.cloneNode(true) as HTMLElement
+
+        // 人工替换 br 和块级结尾，避免因未挂载或特殊 display 造成的 innerText 脱行
+        clone.querySelectorAll('br').forEach(br => br.replaceWith('\n'))
+        clone.querySelectorAll('div, p, li').forEach(block => block.appendChild(document.createTextNode('\n')))
+
+        plainText = clone.textContent || ''
       }
 
       // 清理：移除开头结尾空行
-      newHtml = newHtml
+      plainText = plainText
         .replace(/\r\n/g, '\n')
         .replace(/\r/g, '\n')
         .replace(/^\n+/, '')
         .replace(/\n+$/, '')
 
       // 空代码块跳过
-      if (!newHtml.trim()) {
+      if (!plainText.trim()) {
         pre.remove()
         return
       }
 
-      pre.innerHTML = newHtml
+      // 将换行替换为 <br>，强硬抵抗由于 CSS 丢失造成的微信和搜狐换行坍塌
+      const formattedHtml = escapeHtml(plainText).replace(/\n/g, '<br>')
+      pre.innerHTML = `<code class="language-${lang}" style="font-family: Consolas, Monaco, monospace; font-size: 14px; color: #333;">${formattedHtml}</code>`
+      pre.style.cssText = 'background-color: #f6f8fa; padding: 16px; border-radius: 8px; overflow: auto; word-wrap: break-word; white-space: pre-wrap; margin: 16px 0;'
+
+      // 不再单纯 removeAttribute，直接覆盖即可。因为我们已经设置了 style。
       pre.removeAttribute('class')
-      pre.removeAttribute('style')
       pre.removeAttribute('data-lang')
     } catch (e) {
       logger.error('processCodeBlocks error:', e)
@@ -1061,10 +1072,17 @@ export function backupAndSimplifyCodeBlocks(root: Element = document.body): Elem
         })
         cleanedText = lines.join('\n')
       } else {
-        // 普通格式：用 innerText 提取（在真实 DOM 上能正确处理 br 等）
+        // 普通格式：使用 clone 节点并用换行符替换 <br> 标签，从而安全获得格式纯净的 textContent
         const code = pre.querySelector('code')
         const targetEl = (code || pre) as HTMLElement
-        cleanedText = targetEl.innerText || ''
+        const clone = targetEl.cloneNode(true) as HTMLElement
+
+        // 由于 innerText 可能受当前元素的 CSS display 影响产生不正确的换行，
+        // 这里手动将 br 转换为真正的折行符，并保证 div 等块级元素带有换行，之后直接取纯文本。
+        clone.querySelectorAll('br').forEach(br => br.replaceWith('\n'))
+        clone.querySelectorAll('div, p, li').forEach(block => block.appendChild(document.createTextNode('\n')))
+
+        cleanedText = clone.textContent || ''
       }
 
       // 恢复行号显示
@@ -1090,8 +1108,10 @@ export function backupAndSimplifyCodeBlocks(root: Element = document.body): Elem
         originalHTML: originalHTML,
       })
 
-      // 替换为纯文本，添加标记表示已处理
-      pre.innerHTML = `<code class="language-${lang}">${escapeHtml(cleanedText)}</code>`
+      // 替换为纯文本，添加标记表示已处理，将换行转换为 <br> 以对抗各平台的换行吞噬
+      const formattedHtml = escapeHtml(cleanedText).replace(/\n/g, '<br>')
+      pre.innerHTML = `<code class="language-${lang}" style="font-family: Consolas, Monaco, monospace; font-size: 14px; color: #333;">${formattedHtml}</code>`
+      pre.style.cssText = 'background-color: #f6f8fa; padding: 16px; border-radius: 8px; overflow: auto; word-wrap: break-word; white-space: pre-wrap; margin: 16px 0;'
       pre.setAttribute('data-code-simplified', 'true')
     } catch (e) {
       logger.error('[backupAndSimplifyCodeBlocks] error:', e)

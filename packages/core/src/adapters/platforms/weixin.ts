@@ -56,6 +56,7 @@ export class WeixinAdapter extends CodeAdapter {
   /** 预处理配置: 微信公众号使用 HTML 格式 */
   readonly preprocessConfig = {
     outputFormat: 'html' as const,
+    processCodeBlocks: true,
   }
 
   private weixinMeta: WeixinMeta | null = null
