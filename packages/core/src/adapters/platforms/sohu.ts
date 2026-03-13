@@ -35,9 +35,10 @@ export class SohuAdapter extends CodeAdapter {
     capabilities: ['article', 'draft', 'image_upload'],
   }
 
-  /** 预处理配置: 搜狐号使用 HTML 格式 */
+  /** 预处理配置: 搜狐号使用 HTML 格式，需要处理代码块 */
   readonly preprocessConfig = {
     outputFormat: 'html' as const,
+    processCodeBlocks: true,
   }
 
   private accountInfo: SohuAccountInfo | null = null
@@ -132,8 +133,11 @@ export class SohuAdapter extends CodeAdapter {
         }
       }
 
-      // Use pre-processed HTML content directly
+      // Use pre-preprocessed HTML content directly
       let content = article.html || ''
+
+      // 搜狐号专用：处理代码块换行问题
+      content = this.fixCodeBlocksForSohu(content)
 
       // Process images
       content = await this.processImages(
@@ -219,8 +223,12 @@ export class SohuAdapter extends CodeAdapter {
       throw new Error('未登录')
     }
 
-    // 1. 下载图片
-    const imageResponse = await fetch(src)
+    // 1. 下载图片（添加 referer 头以绕过防盗链）
+    const imageResponse = await fetch(src, {
+      headers: {
+        'Referer': 'https://mp.weixin.qq.com/',
+      },
+    })
     if (!imageResponse.ok) {
       throw new Error('图片下载失败: ' + src)
     }
@@ -253,5 +261,70 @@ export class SohuAdapter extends CodeAdapter {
     return {
       url: res.url,
     }
+  }
+
+  /**
+   * 搜狐号专用：修复代码块换行问题
+   * 搜狐编辑器会过滤 <br> 标签，使用 <div> 标签包装每一行来保留格式
+   */
+  private fixCodeBlocksForSohu(html: string): string {
+    // 匹配 <pre> 标签及其内容
+    return html.replace(/<pre([^>]*)>([\s\S]*?)<\/pre>/gi, (_match, attrs, content) => {
+      // 提取 code 标签（如果存在）
+      const codeMatch = content.match(/<code([^>]*)>([\s\S]*?)<\/code>/i)
+      let codeAttrs = ''
+      let codeContent = content
+
+      if (codeMatch) {
+        codeAttrs = codeMatch[1]
+        codeContent = codeMatch[2]
+      }
+
+      // 将 <br> 替换为实际换行符
+      codeContent = codeContent.replace(/<br\s*\/?>/gi, '\n')
+
+      // 解码 HTML 实体
+      codeContent = this.decodeHtmlEntities(codeContent)
+
+      // 按行分割
+      const lines = codeContent.split('\n').filter((line: string) => line.trim())
+
+      // 使用 <div> 标签包装每一行，这样可以确保即使 <br> 被过滤，换行仍然有效
+      const linesHtml = lines.map((line: string) => `<div style="font-family: Consolas, Monaco, monospace; font-size: 14px; line-height: 1.5; color: #333;">${this.escapeHtml(line)}</div>`).join('')
+
+      // 使用 data-sohu-fixed 属性标记已处理
+      if (codeMatch) {
+        return `<pre${attrs} data-sohu-fixed="true"><code${codeAttrs}>${linesHtml}</code></pre>`
+      } else {
+        return `<pre${attrs} data-sohu-fixed="true"><code>${linesHtml}</code></pre>`
+      }
+    })
+  }
+
+  /**
+   * 解码 HTML 实体
+   */
+  private decodeHtmlEntities(text: string): string {
+    const entities: Record<string, string> = {
+      '&lt;': '<',
+      '&gt;': '>',
+      '&amp;': '&',
+      '&quot;': '"',
+      '&#39;': "'",
+      '&nbsp;': ' ',
+    }
+    return text.replace(/&[a-z]+;|&#[\d]+;/gi, (match) => entities[match] || match)
+  }
+
+  /**
+   * HTML 转义
+   */
+  private escapeHtml(text: string): string {
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;')
   }
 }
