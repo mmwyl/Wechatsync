@@ -5,6 +5,7 @@ import { createLogger } from '../lib/logger'
 import { parseDocument, FILE_ACCEPT, type ParsedDocument } from '../lib/document-importer'
 import { htmlToMarkdownNative } from '@wechatsync/core'
 import { preprocessForPlatform, preprocessContentDOM, type PreprocessResult } from '../lib/content-processor'
+import { storeLargePayload } from '../lib/large-message'
 const logger = createLogger('Editor')
 
 interface Article {
@@ -386,14 +387,17 @@ export function EditorApp() {
         platformContents,
       }
 
-      // 发送同步请求到 background（通过 chrome.runtime.sendMessage）
+      // 大数据通过 storage 中转，避免 runtime.sendMessage 的 64MiB 限制
+      const storageKey = await storeLargePayload(syncId, {
+        article: editedArticle,
+        platforms: platformsArr,
+        syncId,
+      })
+
+      // 消息只传轻量引用
       const response = await chrome.runtime.sendMessage({
         type: 'SYNC_ARTICLE_FROM_EDITOR',
-        payload: {
-          article: editedArticle,
-          platforms: platformsArr,
-          syncId,
-        }
+        payload: { storageKey, syncId },
       })
 
       console.log('Sync response:', response)
@@ -452,13 +456,16 @@ export function EditorApp() {
         platformContents,
       }
 
+      // 大数据通过 storage 中转，避免 runtime.sendMessage 的 64MiB 限制
+      const storageKey = await storeLargePayload(syncId, {
+        article: editedArticle,
+        platforms: failedPlatforms,
+        syncId,
+      })
+
       await chrome.runtime.sendMessage({
         type: 'SYNC_ARTICLE_FROM_EDITOR',
-        payload: {
-          article: editedArticle,
-          platforms: failedPlatforms,
-          syncId,
-        }
+        payload: { storageKey, syncId },
       })
     } catch (error) {
       console.error('Retry sync error:', error)

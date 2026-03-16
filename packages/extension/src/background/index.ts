@@ -26,6 +26,7 @@ import {
   trackGrowthMetrics,
 } from '../lib/analytics'
 import { checkSyncFrequency, recordSync } from '../lib/rate-limit'
+import { retrieveLargePayload, cleanupStalePayloads } from '../lib/large-message'
 import { checkForUpdates, isUpdateDismissed } from '../lib/version-check'
 
 const logger = createLogger('Background')
@@ -126,7 +127,7 @@ type MessageAction =
   | { type: 'GET_PLATFORMS' }
   | { type: 'CHECK_ALL_AUTH'; payload?: { forceRefresh?: boolean } }
   | { type: 'CHECK_AUTH'; payload: { platformId: string } }
-  | { type: 'SYNC_ARTICLE'; payload: { article: any; platforms: string[]; allSelectedPlatforms?: string[]; skipHistory?: boolean; source?: string; syncId?: string } }
+  | { type: 'SYNC_ARTICLE'; payload: { storageKey: string; syncId?: string } }
   | { type: 'OPEN_SYNC_PAGE'; path?: string }
   | { type: 'TEST_CMS_CONNECTION'; payload: { type: CMSType; url: string; username: string; password: string } }
   | { type: 'SYNC_TO_CMS'; payload: { accountId: string; article: any } }
@@ -145,7 +146,7 @@ type MessageAction =
   | { type: 'GET_PREPROCESS_CONFIGS'; platforms: string[] }
   | { type: 'TRIGGER_OPEN_EDITOR' }
   | { type: 'OPEN_EDITOR_FROM_IMPORT'; payload: { article: any; platforms: any[] } }
-  | { type: 'SYNC_ARTICLE_FROM_EDITOR'; payload: { article: any; platforms: string[]; syncId?: string } }
+  | { type: 'SYNC_ARTICLE_FROM_EDITOR'; payload: { storageKey: string; syncId?: string } }
 
 /**
  * 消息处理
@@ -202,7 +203,17 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
     }
 
     case 'SYNC_ARTICLE': {
-      const { article, platforms, allSelectedPlatforms, skipHistory, source = 'popup', syncId: passedSyncId } = message.payload
+      // 从 storage 中读取大型 payload，避免消息体超过 64MiB 限制
+      const { storageKey, syncId: passedSyncId } = message.payload
+      const payload = await retrieveLargePayload<{
+        article: any
+        platforms: string[]
+        allSelectedPlatforms?: string[]
+        skipHistory?: boolean
+        source?: string
+        syncId?: string
+      }>(storageKey)
+      const { article, platforms, allSelectedPlatforms, skipHistory, source = 'popup' } = payload
       const allPlatformMetas = getAllPlatformMetas()
 
       // 使用传入的 syncId 或生成新的
@@ -1026,13 +1037,20 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
     }
 
     case 'SYNC_ARTICLE_FROM_EDITOR': {
-      // 从编辑器标签页发起的同步
-      const { article, platforms, syncId: passedSyncId } = message.payload || {}
+      // 从 storage 中读取大型 payload，避免消息体超过 64MiB 限制
+      const { storageKey, syncId: passedSyncId } = message.payload || {}
       const editorTabId = sender?.tab?.id
 
       if (!editorTabId) {
         return { success: false, error: 'No editor tab ID' }
       }
+
+      const editorPayload = await retrieveLargePayload<{
+        article: any
+        platforms: string[]
+        syncId?: string
+      }>(storageKey)
+      const { article, platforms } = editorPayload
 
       const allPlatformMetas = getAllPlatformMetas()
 
@@ -1264,6 +1282,9 @@ chrome.runtime.onInstalled.addListener(async details => {
 
   // 预加载适配器
   await initAdapters()
+
+  // 清理可能残留的大数据中转缓存
+  cleanupStalePayloads().catch(() => {})
 
   // 追踪安装/更新
   trackInstall(details.reason, details.previousVersion).catch(() => { })

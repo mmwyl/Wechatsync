@@ -9,6 +9,7 @@ import {
   trackImplicitFeedback,
 } from '../../lib/analytics'
 import { checkSyncFrequency } from '../../lib/rate-limit'
+import { storeLargePayload } from '../../lib/large-message'
 import { createLogger } from '../../lib/logger'
 
 const logger = createLogger('SyncStore')
@@ -406,11 +407,16 @@ export const useSyncStore = create<SyncState>((set, get) => ({
     set({ status: 'syncing', results: [], error: null, imageProgress: null, platformProgress: new Map(), currentSyncId: syncId })
 
     try {
+      // 大数据通过 storage 中转，避免 runtime.sendMessage 的 64MiB 限制
+      const storageKey = await storeLargePayload(syncId, {
+        article, platforms: selectedPlatforms, syncId,
+      })
+
       // SYNC_ARTICLE 现在同时处理 DSL 和 CMS 平台
-      // 传递 syncId 给 background，background 会用这个 ID
+      // 消息只传轻量引用
       const response = await chrome.runtime.sendMessage({
         type: 'SYNC_ARTICLE',
-        payload: { article, platforms: selectedPlatforms, syncId },
+        payload: { storageKey, syncId },
       })
 
       const allResults: SyncResult[] = response.results || []
@@ -482,10 +488,15 @@ export const useSyncStore = create<SyncState>((set, get) => ({
     set({ status: 'syncing', results: successResults, error: null, imageProgress: null, platformProgress: new Map(), currentSyncId: syncId })
 
     try {
+      // 大数据通过 storage 中转，避免 runtime.sendMessage 的 64MiB 限制
+      const storageKey = await storeLargePayload(syncId, {
+        article, platforms: failedPlatformIds, skipHistory: true, syncId,
+      })
+
       // SYNC_ARTICLE 现在同时处理 DSL 和 CMS 平台
       const response = await chrome.runtime.sendMessage({
         type: 'SYNC_ARTICLE',
-        payload: { article, platforms: failedPlatformIds, skipHistory: true, syncId },
+        payload: { storageKey, syncId },
       })
 
       const retryResults: SyncResult[] = response.results || []
