@@ -1464,42 +1464,6 @@ clearOrphanedRules()
 // 首次启动时拉取远程配置（带缓存检查）
 fetchConfigIfNeeded().catch(() => {})
 
-// 检查版本更新（用于 ZIP 安装用户）
-// 如有新版本，在扩展图标上显示 badge 提醒
-checkForUpdates().then(async (result) => {
-  if (result.hasUpdate && result.info) {
-    // 检查用户是否已忽略此版本
-    const isDismissed = await isUpdateDismissed(result.info.version)
-    if (!isDismissed) {
-      // 显示更新 badge
-      await chrome.action.setBadgeText({ text: 'NEW' })
-      await chrome.action.setBadgeBackgroundColor({ color: BADGE_COLORS.update })
-      logger.info('Update badge shown for version:', result.info.version)
-    }
-  }
-}).catch(() => {})
-
-/**
- * 清理遗留的动态规则（防止扩展崩溃后规则残留影响其他网站）
- */
-async function clearOrphanedRules() {
-  try {
-    const rules = await chrome.declarativeNetRequest.getDynamicRules()
-    if (rules.length > 0) {
-      logger.info(`Clearing ${rules.length} orphaned dynamic rules...`)
-      await chrome.declarativeNetRequest.updateDynamicRules({
-        removeRuleIds: rules.map(r => r.id),
-      })
-      logger.info('Orphaned rules cleared')
-    }
-  } catch (error) {
-    logger.error('Failed to clear orphaned rules:', error)
-  }
-}
-
-// 启动时清理遗留规则
-clearOrphanedRules()
-
 logger.info('Service Worker started')
 
 // 最大历史记录数
