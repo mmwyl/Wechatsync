@@ -286,7 +286,7 @@ function addExtensionRules(turndownService: TurndownService): void {
   // figure 元素 - 直接透传内容（常包裹 table）
   turndownService.addRule('figure', {
     filter: 'figure',
-    replacement: function (content) {
+    replacement: function(content) {
       return content
     }
   })
@@ -294,7 +294,7 @@ function addExtensionRules(turndownService: TurndownService): void {
   // figcaption 元素 - 转为斜体文本
   turndownService.addRule('figcaption', {
     filter: 'figcaption',
-    replacement: function (content) {
+    replacement: function(content) {
       return content ? '\n*' + content.trim() + '*\n' : ''
     }
   })
@@ -302,7 +302,7 @@ function addExtensionRules(turndownService: TurndownService): void {
   // 表格单元格
   turndownService.addRule('tableCell', {
     filter: ['th', 'td'],
-    replacement: function (content, node) {
+    replacement: function(content, node) {
       return cell(content, node as Element)
     }
   })
@@ -310,7 +310,7 @@ function addExtensionRules(turndownService: TurndownService): void {
   // 表格行
   turndownService.addRule('tableRow', {
     filter: 'tr',
-    replacement: function (content, node) {
+    replacement: function(content, node) {
       const tr = node as Element
       let borderCells = ''
       const alignMap: Record<string, string> = { left: ':--', right: '--:', center: ':-:' }
@@ -335,7 +335,7 @@ function addExtensionRules(turndownService: TurndownService): void {
 
   // 表格
   turndownService.addRule('table', {
-    filter: function (node) {
+    filter: function(node) {
       try {
         if (node.nodeName !== 'TABLE') return false
         const table = node as Element
@@ -347,7 +347,7 @@ function addExtensionRules(turndownService: TurndownService): void {
         return false
       }
     },
-    replacement: function (content) {
+    replacement: function(content) {
       // 确保没有空行
       content = content.replace(/\n\n/g, '\n')
       return '\n\n' + content + '\n\n'
@@ -357,7 +357,7 @@ function addExtensionRules(turndownService: TurndownService): void {
   // 表格区段
   turndownService.addRule('tableSection', {
     filter: ['thead', 'tbody', 'tfoot'],
-    replacement: function (content) {
+    replacement: function(content) {
       return content
     }
   })
@@ -365,7 +365,7 @@ function addExtensionRules(turndownService: TurndownService): void {
   // 代码块
   turndownService.addRule('preCode', {
     filter: ['pre'],
-    replacement: function (_content, node) {
+    replacement: function(_content, node) {
       const pre = node as HTMLPreElement
 
       // 尝试获取语言（多种来源）
@@ -399,14 +399,19 @@ function addExtensionRules(turndownService: TurndownService): void {
         language = 'bash'
       }
 
-      // 克隆节点以进行安全修改，避免直接修改 DOM 或受当前 CSS (如 display: flex/box) 干扰
-      const clone = pre.cloneNode(true) as HTMLElement
-      // 将 br 替换为 \n
-      clone.querySelectorAll('br').forEach(br => br.replaceWith('\n'))
-      // 保证常见的块级元素产生换行
-      clone.querySelectorAll('div, p, li').forEach(block => block.appendChild(document.createTextNode('\n')))
-
-      let text = clone.textContent || ''
+      // 处理微信等平台将每行代码放在单独 <code> 标签的情况
+      const codeElements = pre.querySelectorAll('code')
+      let text: string
+      if (codeElements.length > 1) {
+        // 多个 code 标签，提取每个的文本并用换行连接
+        const lines: string[] = []
+        codeElements.forEach((codeEl) => {
+          lines.push(codeEl.innerText || codeEl.textContent || '')
+        })
+        text = lines.join('\n')
+      } else {
+        text = pre.innerText || ''
+      }
 
       // 清理文本
       text = text
@@ -439,7 +444,7 @@ function addExtensionRules(turndownService: TurndownService): void {
   })
 
   // 保留没有表头的表格（作为 HTML）
-  turndownService.keep(function (node) {
+  turndownService.keep(function(node) {
     try {
       if (node.nodeName !== 'TABLE') return false
       const table = node as Element
@@ -674,7 +679,7 @@ function convertTables(html: string): string {
 
           // 提取对齐方式
           const alignMatch = attrs.match(/align=["']?(left|center|right)["']?/i) ||
-            attrs.match(/style=["'][^"']*text-align:\s*(left|center|right)/i)
+                            attrs.match(/style=["'][^"']*text-align:\s*(left|center|right)/i)
           const align = alignMatch ? alignMatch[1].toLowerCase() : ''
           rowAligns.push(align)
 

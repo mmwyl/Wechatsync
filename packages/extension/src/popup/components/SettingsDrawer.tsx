@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react'
-import { X, Plug, PlugZap, Plus, Trash2, ExternalLink, ChevronRight } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
+import { X, Plug, PlugZap, Plus, Trash2, ChevronRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { trackHelpSeeking, trackFeatureDiscovery } from '../../lib/analytics'
+import { trackFeatureDiscovery } from '../../lib/analytics'
 
 interface SettingsDrawerProps {
   open: boolean
@@ -12,6 +12,7 @@ interface McpStatus {
   enabled: boolean
   connected: boolean
   token?: string
+  serverUrl?: string
 }
 
 interface CMSAccount {
@@ -26,6 +27,8 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
   const [cmsAccounts, setCmsAccounts] = useState<CMSAccount[]>([])
   const [loading, setLoading] = useState(false)
   const [floatingButtonEnabled, setFloatingButtonEnabled] = useState(false)
+  const [serverUrlInput, setServerUrlInput] = useState('')
+  const serverUrlTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // 获取状态
   useEffect(() => {
@@ -38,7 +41,9 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
           enabled: response.enabled ?? false,
           connected: response.connected ?? false,
           token: response.token,
+          serverUrl: response.serverUrl,
         })
+        setServerUrlInput(response.serverUrl || '')
       }
     })
 
@@ -53,9 +58,12 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
     })
   }, [open])
 
-  // MCP 状态轮询
+  // MCP 状态轮询 + 通知 background 加速重连
   useEffect(() => {
     if (!open || !mcpStatus.enabled) return
+
+    // 通知 background：用户正在关注，加速重连
+    chrome.runtime.sendMessage({ type: 'MCP_WATCH_START' })
 
     const interval = setInterval(() => {
       chrome.runtime.sendMessage({ type: 'MCP_STATUS' }, (response) => {
@@ -65,7 +73,11 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
       })
     }, 3000)
 
-    return () => clearInterval(interval)
+    return () => {
+      clearInterval(interval)
+      // 设置页关闭，恢复正常重连策略
+      chrome.runtime.sendMessage({ type: 'MCP_WATCH_STOP' })
+    }
   }, [open, mcpStatus.enabled])
 
   // 切换 MCP
@@ -89,6 +101,21 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
         }))
       }
     })
+  }
+
+  // 服务器地址变更（防抖 800ms）
+  const handleServerUrlChange = (value: string) => {
+    setServerUrlInput(value)
+    if (serverUrlTimer.current) {
+      clearTimeout(serverUrlTimer.current)
+    }
+    serverUrlTimer.current = setTimeout(() => {
+      chrome.runtime.sendMessage({
+        type: 'MCP_SET_SERVER_URL',
+        payload: { url: value.trim() },
+      })
+      setMcpStatus(prev => ({ ...prev, serverUrl: value.trim() }))
+    }, 800)
   }
 
   // 切换悬浮按钮
@@ -137,10 +164,10 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
         </div>
 
         {/* 内容 */}
-        <div className="p-4 space-y-6 overflow-y-auto h-[calc(100%-120px)]">
-          {/* MCP 设置 */}
+        <div className="p-4 space-y-6 overflow-y-auto h-[calc(100%-57px)]">
+          {/* 同步桥接设置 */}
           <div className="space-y-3">
-            <h3 className="text-sm font-medium text-muted-foreground">Claude Code 集成</h3>
+            <h3 className="text-sm font-medium text-muted-foreground">同步桥接</h3>
 
             <div className="flex items-center justify-between p-3 bg-muted/50 rounded-lg">
               <div className="flex items-center gap-2">
@@ -150,7 +177,7 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
                   <Plug className="w-5 h-5 text-muted-foreground" />
                 )}
                 <div>
-                  <p className="text-sm font-medium">MCP 连接</p>
+                  <p className="text-sm font-medium">CLI / MCP 连接</p>
                   <p className="text-xs text-muted-foreground">
                     {mcpStatus.enabled
                       ? mcpStatus.connected
@@ -182,16 +209,26 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
             {mcpStatus.enabled && (
               <div className="space-y-2">
                 <p className="text-xs text-muted-foreground">
-                  运行 <code className="bg-muted px-1 rounded">yarn mcp</code> 启动服务
+                  供 CLI 和 MCP Server 通过 WebSocket 桥接同步文章
                 </p>
                 {mcpStatus.token && (
                   <div className="p-2 bg-muted/50 rounded text-xs">
-                    <p className="text-muted-foreground mb-1">Token (MCP Server 需要此 token):</p>
+                    <p className="text-muted-foreground mb-1">Token:</p>
                     <code className="block bg-background p-1.5 rounded break-all select-all">
                       {mcpStatus.token}
                     </code>
                   </div>
                 )}
+                <div className="p-2 bg-muted/50 rounded text-xs">
+                  <p className="text-muted-foreground mb-1">服务器地址 (留空使用本地默认):</p>
+                  <input
+                    type="text"
+                    value={serverUrlInput}
+                    onChange={(e) => handleServerUrlChange(e.target.value)}
+                    placeholder="ws://localhost:9527"
+                    className="w-full bg-background p-1.5 rounded border border-border text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary"
+                  />
+                </div>
               </div>
             )}
           </div>
@@ -279,40 +316,6 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
             </button>
           </div>
 
-          {/* 关于 */}
-          <div className="space-y-3">
-            <h3 className="text-sm font-medium text-muted-foreground">关于</h3>
-
-            <div className="text-xs text-muted-foreground space-y-1">
-              <p>微信公众号同步助手 v{chrome.runtime.getManifest().version}</p>
-              <p>支持 20+ 平台一键同步</p>
-            </div>
-
-            <a
-              href="https://github.com/wechatsync/Wechatsync"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-2 text-xs text-primary hover:underline"
-              onClick={() => trackHelpSeeking('github_issue').catch(() => {})}
-            >
-              <ExternalLink className="w-3 h-3" />
-              GitHub 开源
-            </a>
-          </div>
-        </div>
-
-        {/* 底部固定 - 问题反馈 */}
-        <div className="absolute bottom-0 left-0 right-0 p-4 border-t bg-background">
-          <a
-            href="https://txc.qq.com/products/105772"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center justify-center gap-2 w-full py-2 px-4 bg-primary/10 hover:bg-primary/20 text-primary rounded-lg text-sm font-medium transition-colors"
-            onClick={() => trackHelpSeeking('feedback_click').catch(() => {})}
-          >
-            <ExternalLink className="w-4 h-4" />
-            问题反馈
-          </a>
         </div>
       </div>
     </>

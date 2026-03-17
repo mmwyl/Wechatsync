@@ -66,6 +66,9 @@ export interface PreprocessConfig {
   /** 压缩 HTML（移除标签间空白） */
   compactHtml?: boolean
 
+  /** 将表格转换为文本（用 | 分隔列，适用于不支持表格的平台） */
+  convertTablesToText?: boolean
+
   // 清理空内容
   /** 移除空行（只含 br 或空白的段落） */
   removeEmptyLines?: boolean

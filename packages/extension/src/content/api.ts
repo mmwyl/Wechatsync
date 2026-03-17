@@ -307,3 +307,4 @@ if (document.readyState === 'loading') {
 } else {
   injectAPI();
 }
+

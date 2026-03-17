@@ -6,20 +6,7 @@ import { resolve } from 'path'
 import { copyFileSync, mkdirSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'fs'
 import baseManifest from './manifest.json'
 
-// 动态添加私有 content scripts（文件存在时才注入）
-const privateContentScripts: Array<{ matches: string[]; js: string[]; run_at: string }> = []
-const privateScriptConfigs = [
-  { file: 'src/content/xiaohongshu.ts', matches: ['https://creator.xiaohongshu.com/*'], run_at: 'document_end' },
-]
-for (const config of privateScriptConfigs) {
-  if (existsSync(resolve(__dirname, config.file))) {
-    privateContentScripts.push({ matches: config.matches, js: [config.file], run_at: config.run_at })
-  }
-}
-const manifest = {
-  ...baseManifest,
-  content_scripts: [...baseManifest.content_scripts, ...privateContentScripts],
-}
+const manifest = baseManifest
 
 // 复制静态文件并修改 manifest 的插件
 function copyStaticFilesPlugin() {
@@ -119,6 +106,8 @@ export default defineConfig(({ mode }) => {
       input: {
         popup: resolve(__dirname, 'src/popup/index.html'),
         editor: resolve(__dirname, 'src/editor/index.html'),
+        'sync-dialog': resolve(__dirname, 'src/sync-dialog/index.html'),
+        preprocessor: resolve(__dirname, 'src/preprocessor/index.html'),
       },
     },
   },

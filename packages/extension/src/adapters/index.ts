@@ -27,21 +27,16 @@ import {
   DoubanAdapter,
   XueqiuAdapter,
   SohuAdapter,
-  DaYuAdapter,
   WoshipmAdapter,
   ZhihuAdapter,
   JuejinAdapter,
   CSDNAdapter,
-  ToutiaoAdapter,
   WeiboAdapter,
   BilibiliAdapter,
   BaijiahaoAdapter,
   YuqueAdapter,
   WeixinAdapter,
-  JianshuAdapter,
-  YidianAdapter,
   Cto51Adapter,
-  SohuFocusAdapter,
   ImoocAdapter,
   OschinaAdapter,
   SegmentfaultAdapter,
@@ -50,10 +45,9 @@ import {
   EastmoneyAdapter,
 } from '@wechatsync/core'
 
-// 私有适配器 - 通过 glob 动态加载（文件不存在时为空对象，不会报错）
-// 使用 Vite alias @wechatsync/core 确保构建时正确解析
+// 私有适配器 - private/ 目录通过 git submodule 管理
 const privateModules = import.meta.glob<Record<string, unknown>>(
-  ['@wechatsync/core/adapters/platforms/x.ts', '@wechatsync/core/adapters/platforms/xiaohongshu.ts'],
+  '@wechatsync/core/adapters/platforms/private/*.ts',
   { eager: true }
 )
 
@@ -86,8 +80,6 @@ function getPrivateAdapters(): AdapterConstructor[] {
 const ADAPTER_CLASSES: AdapterConstructor[] = [
   ZhihuAdapter,
   JuejinAdapter,
-  JianshuAdapter,
-  ToutiaoAdapter,
   WeiboAdapter,
   BilibiliAdapter,
   BaijiahaoAdapter,
@@ -98,10 +90,7 @@ const ADAPTER_CLASSES: AdapterConstructor[] = [
   XueqiuAdapter,
   WeixinAdapter,
   WoshipmAdapter,
-  DaYuAdapter,
-  YidianAdapter,
   Cto51Adapter,
-  SohuFocusAdapter,
   ImoocAdapter,
   OschinaAdapter,
   SegmentfaultAdapter,

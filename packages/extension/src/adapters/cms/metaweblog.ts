@@ -399,14 +399,13 @@ async function doUploadImageByUrl(
 
 /**
  * 处理文章中的图片
- * @throws 当图片上传失败时抛出错误
  */
 export async function processArticleImages(
   credentials: MetaWeblogCredentials,
   content: string,
   onProgress?: (current: number, total: number) => void,
   signal?: AbortSignal
-): Promise<string> {
+): Promise<{ content: string; failedImages: number }> {
   const imgRegex = /<img[^>]+src="([^"]+)"[^>]*>/gi
   const matches: { full: string; src: string }[] = []
 
@@ -420,7 +419,7 @@ export async function processArticleImages(
   }
 
   if (matches.length === 0) {
-    return content
+    return { content, failedImages: 0 }
   }
 
   logger.debug(` Found ${matches.length} images to process`)
@@ -428,6 +427,7 @@ export async function processArticleImages(
   let result = content
   const uploadedMap = new Map<string, string>()
   let processed = 0
+  let failedImages = 0
 
   for (const { full, src } of matches) {
     // 检查是否已取消
@@ -461,8 +461,10 @@ export async function processArticleImages(
         newUrl = uploadResult.url
         uploadedMap.set(src, newUrl)
       } else {
-        // 上传失败，抛出错误
-        throw new Error(`图片上传失败 (重试 ${MAX_RETRY_ATTEMPTS} 次后): ${src.substring(0, 100)}...`)
+        // 上传失败，跳过该图片，保留原始 URL，继续处理其他图片
+        failedImages++
+        logger.warn(`图片上传失败，跳过: ${src.substring(0, 100)}...`)
+        continue
       }
     }
 
@@ -475,7 +477,7 @@ export async function processArticleImages(
     await new Promise(resolve => setTimeout(resolve, 300))
   }
 
-  return result
+  return { content: result, failedImages }
 }
 
 /**
@@ -485,15 +487,18 @@ export async function publish(
   credentials: MetaWeblogCredentials,
   article: { title: string; content: string },
   options?: { draftOnly?: boolean; processImages?: boolean; onImageProgress?: (current: number, total: number) => void }
-): Promise<{ success: boolean; postId?: string; postUrl?: string; error?: string }> {
+): Promise<{ success: boolean; postId?: string; postUrl?: string; message?: string; error?: string }> {
   const endpoint = getEndpoint(credentials)
 
   try {
     // 如果启用图片处理，先处理文章中的图片
     let content = article.content
+    let failedImages = 0
     if (options?.processImages !== false) {
       logger.debug(' Processing images before publish...')
-      content = await processArticleImages(credentials, content, options?.onImageProgress)
+      const imageResult = await processArticleImages(credentials, content, options?.onImageProgress)
+      content = imageResult.content
+      failedImages = imageResult.failedImages
     }
 
     const post = {
@@ -535,7 +540,8 @@ export async function publish(
       ? `${baseUrl}/admin/manage-posts.php?cid=${postId}`
       : `${baseUrl}/archives/${postId}/`
 
-    return { success: true, postId, postUrl }
+    const message = failedImages > 0 ? `${failedImages} 张图片上传失败` : undefined
+    return { success: true, postId, postUrl, message }
   } catch (error) {
     return { success: false, error: (error as Error).message }
   }
@@ -647,7 +653,7 @@ export async function publishToTypecho(
   credentials: MetaWeblogCredentials,
   article: { title: string; content: string },
   options?: { draftOnly?: boolean; processImages?: boolean; onImageProgress?: (current: number, total: number) => void; signal?: AbortSignal }
-): Promise<{ success: boolean; postId?: string; postUrl?: string; error?: string }> {
+): Promise<{ success: boolean; postId?: string; postUrl?: string; message?: string; error?: string }> {
   const endpoint = credentials.url.replace(/\/$/, '') + '/action/xmlrpc'
 
   // Typecho 使用 /action/xmlrpc 端点，设置到 credentials 供图片上传使用
@@ -656,9 +662,12 @@ export async function publishToTypecho(
   try {
     // 如果启用图片处理，先处理文章中的图片
     let content = article.content
+    let failedImages = 0
     if (options?.processImages !== false) {
       logger.debug(' Processing images before publish...')
-      content = await processArticleImages(typechoCredentials, content, options?.onImageProgress, options?.signal)
+      const imageResult = await processArticleImages(typechoCredentials, content, options?.onImageProgress, options?.signal)
+      content = imageResult.content
+      failedImages = imageResult.failedImages
     }
 
     // Typecho 使用 metaWeblog.newPost，参数格式和旧版保持一致
@@ -717,7 +726,8 @@ export async function publishToTypecho(
       postUrl = `${baseUrl}/admin/manage-posts.php`
     }
 
-    return { success: true, postId, postUrl }
+    const message = failedImages > 0 ? `${failedImages} 张图片上传失败` : undefined
+    return { success: true, postId, postUrl, message }
   } catch (error) {
     return { success: false, error: (error as Error).message }
   }

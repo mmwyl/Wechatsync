@@ -6,7 +6,7 @@
 
 **开源免费**的跨平台文章同步工具 | Chrome 浏览器扩展 | 自媒体内容分发神器
 
-一键同步微信公众号文章到知乎、头条、掘金、小红书、CSDN 等 25+ 平台，支持 WordPress 等自建博客，告别重复复制粘贴。
+一键同步微信公众号文章到知乎、头条、掘金、小红书、CSDN 等 29+ 平台，支持 WordPress 等自建博客，告别重复复制粘贴。
 
 > 🔥 支持 **Anthropic MCP 协议**，可在 Claude Desktop / Claude Code 中通过 AI 一键发布文章
 
@@ -30,12 +30,13 @@
 
 ## 功能特性
 
-- **一键批量发布**: 微信公众号文章同步到知乎、掘金、头条、CSDN、简书、微博、小红书等 25+ 自媒体平台
+- **一键批量发布**: 微信公众号文章同步到知乎、掘金、头条、CSDN、简书、微博、小红书、抖音等 29+ 自媒体平台
+- **网页转 Markdown**: 任意网页智能提取正文，自动过滤广告噪音，图片本地化，打包为 Markdown + 图片 ZIP 压缩包
 - **自建站支持**: WordPress、Typecho、博客园 (MetaWeblog API)
 - **智能提取**: 自动从网页提取文章标题、内容、封面图（基于 Safari 阅读模式）
 - **图片自动上传**: 自动转存文章图片到目标平台，无需手动处理
 - **草稿模式**: 同步后保存为草稿，方便二次编辑后发布
-- **MCP AI 集成**: 支持 Anthropic MCP 协议，配合 Claude Desktop / Claude Code 使用
+- **AI 集成**: 支持 Anthropic MCP / Claude Code Skill / OpenClaw，多种方式接入 AI 工作流
 
 ## 安装方式
 
@@ -43,20 +44,24 @@
 
 **推荐**: [Chrome 网上应用店](https://chrome.google.com/webstore/detail/%E5%BE%AE%E4%BF%A1%E5%90%8C%E6%AD%A5%E5%8A%A9%E6%89%8B/hchobocdmclopcbnibdnoafilagadion) (自动更新)
 
-**手动安装**: 下载 [最新 Release](https://wpics.oss-cn-shanghai.aliyuncs.com/wechatsync-2.0.6.zip?date=20260225) 解压后加载到 Chrome 扩展
+**手动安装**: 下载 [最新 Release](https://wpics.oss-cn-shanghai.aliyuncs.com/wechatsync-2.0.8.zip?date=20260317) 解压后加载到 Chrome 扩展
+
+支持 Chrome / Edge / 360 / QQ 等 Chromium 内核浏览器
 
 
-## 支持的平台
+## 支持 29+ 主流平台
 
 | 平台 | ID | 类型 | 状态 |
 |-----|-----|-----|-----|
 | 微信公众号 | weixin | 主流自媒体 | ✅ |
 | 知乎 | zhihu | 主流自媒体 | ✅ |
 | 微博 | weibo | 主流自媒体 | ✅ |
+| 小红书 | xiaohongshu | 主流自媒体 | ✅ |
 | 掘金 | juejin | 技术社区 | ✅ |
 | CSDN | csdn | 技术社区 | ✅ |
 | 简书 | jianshu | 通用 | ✅ |
 | 头条号 | toutiao | 通用 | ✅ |
+| 抖音图文 | douyin | 主流自媒体 | ✅ 🆕 |
 | B站专栏 | bilibili | 通用 | ✅ |
 | 百家号 | baijiahao | 通用 | ✅ |
 | 语雀 | yuque | 技术社区 | ✅ |
@@ -71,11 +76,13 @@
 | 开源中国 | oschina | 技术社区 | ✅ |
 | SegmentFault | segmentfault | 技术社区 | ✅ |
 | 搜狐焦点 | sohufocus | 房产 | ✅ |
-| 小红书 | xiaohongshu | 主流自媒体 | ✅ |
 | X (Twitter) | x | 海外 | ✅ |
 | 东方财富 | eastmoney | 财经 | ✅ |
+| 什么值得买 | smzdm | 通用 | ✅ |
+| 网易号 | netease | 通用 | ✅ |
 | WordPress | wordpress | 自建站 | ✅ |
 | Typecho | typecho | 自建站 | ✅ |
+| Markdown 压缩包 | zip-download | 下载 | ✅ |
 
 - [提交新平台请求](https://airtable.com/shrLSJMnTC2BlmP29)
 
@@ -107,11 +114,19 @@ wechatsync extract -o article.md
 安装后可在 Claude Code 中直接用自然语言操作：
 
 ```bash
-/plugin marketplace add wechatsync/Wechatsync
+/plugin marketplace add wechatsync
 /plugin install wechatsync
 ```
 
 然后直接说"把这篇文章同步到掘金和知乎"即可。
+
+### OpenClaw 集成
+
+通过 [ClawHub](https://clawhub.ai/lljxx1/wechatsync) 技能市场一键安装：
+
+```bash
+clawhub install lljxx1/wechatsync
+```
 
 详细文档见 [packages/cli/README.md](packages/cli/README.md)
 
@@ -202,17 +217,28 @@ pnpm build
 
 ## 更新日志
 
+### v2.0.8 (2026-03-17)
+
+- 🆕 新增抖音图文
+- 🆕 统一同步对话框和悬浮按钮
+- 🔧 修复 CLI 同步格式异常
+- 🔧 改善 CLI/MCP 桥接重连稳定性
+
+### v2.0.7 (2026-03-10)
+
+- 🆕 新增什么值得买、网易号平台
+- 🆕 简书支持 Markdown 格式发布
+- 🔧 重新适配简书、一点号、搜狐号
+
 ### v2.0.6 (2026-02-25)
 
-- 🆕 新增东方财富 (由@mayaohua贡献)
-- 🆕 新增悬浮同步按钮（设置中开启，默认关闭）
-- 🔧 修复 WordPress / Typecho 部分图片因扩展名错误导致上传失败
+- 🆕 新增东方财富
+- 🆕 新增悬浮同步按钮
 
 ### v2.0.5 (2025-02-05)
 
-- 📦 代码块提取兼容性提升（支持更多格式）
-- 🔧 修复 OSChina
-- 🆕 新增 Markdown 压缩包下载（适用于 Hexo 等博客同步）
+- 🔧 代码块提取兼容性提升
+- 🆕 新增 Markdown 压缩包下载
 
 完整日志见 [更新日志页面](https://www.wechatsync.com/changelog)
 
@@ -240,7 +266,7 @@ pnpm build
 
 **Q: 支持同步微信公众号文章吗？**
 
-支持。可以直接从微信公众号编辑器提取文章，一键同步到知乎、头条、掘金等 25+ 平台。支持公众号文章同步到头条号、公众号同步到知乎、微信文章同步到掘金等各种场景。
+支持。可以直接从微信公众号编辑器提取文章，一键同步到知乎、头条、掘金等 29+ 平台。支持公众号文章同步到头条号、公众号同步到知乎、微信文章同步到掘金等各种场景。
 
 **Q: 支持 AI 写作工具吗？**
 

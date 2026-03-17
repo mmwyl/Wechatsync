@@ -5,17 +5,12 @@
  * - 第一个实例启动 WebSocket 服务器 + HTTP API
  * - 后续实例通过 HTTP API 转发请求
  */
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-import wsModule from 'ws'
+import { WebSocketServer, WebSocket } from 'ws'
 import http from 'http'
 import type { RequestMessage, ResponseMessage } from './types.js'
 
-// 兼容 CJS 和 ESM 打包
-const WsModule = wsModule as any
-// ESM: WebSocketServer, CJS: Server
-const WebSocketServer = WsModule.WebSocketServer || WsModule.Server || WsModule.default?.WebSocketServer || WsModule.default?.Server
 // WebSocket 状态常量 (readyState: 1 = OPEN)
-const WS_OPEN = 1
+const WS_OPEN = WebSocket.OPEN
 
 export class ExtensionBridge {
   private wss: any = null
@@ -188,12 +183,22 @@ export class ExtensionBridge {
   /**
    * 检查 Extension 是否已连接
    */
+  /**
+   * 获取当前运行模式
+   */
+  getMode(): 'primary' | 'secondary' {
+    return this.isServerMode ? 'primary' : 'secondary'
+  }
+
+  /**
+   * 检查 Extension 是否已连接
+   */
   isConnected(): boolean {
     if (this.isServerMode) {
       return this.client !== null && this.client.readyState === WS_OPEN
     } else {
-      // 客户端模式：无法同步检查，返回 true 让实际请求时验证
-      return true
+      // SECONDARY 模式：无法同步检查，需要用 checkPrimaryHealth 异步验证
+      return false
     }
   }
 
@@ -201,24 +206,91 @@ export class ExtensionBridge {
    * 等待 Extension 连接
    */
   waitForConnection(timeoutMs: number = 60000): Promise<void> {
-    if (this.isConnected()) {
-      return Promise.resolve()
-    }
+    if (this.isServerMode) {
+      // PRIMARY 模式：等待扩展 WebSocket 连接
+      if (this.client !== null && this.client.readyState === WS_OPEN) {
+        return Promise.resolve()
+      }
 
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        const index = this.connectionResolvers.indexOf(resolve)
-        if (index > -1) {
-          this.connectionResolvers.splice(index, 1)
-        }
-        reject(new Error('timeout'))
-      }, timeoutMs)
+      return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          const index = this.connectionResolvers.indexOf(resolve)
+          if (index > -1) {
+            this.connectionResolvers.splice(index, 1)
+          }
+          reject(new Error('timeout'))
+        }, timeoutMs)
 
-      this.connectionResolvers.push(() => {
-        clearTimeout(timeout)
-        resolve()
+        this.connectionResolvers.push(() => {
+          clearTimeout(timeout)
+          resolve()
+        })
       })
-    })
+    } else {
+      // SECONDARY 模式：轮询 PRIMARY 健康状态，PRIMARY 消失则尝试接管
+      return new Promise((resolve, reject) => {
+        const startTime = Date.now()
+        const pollInterval = 2000
+        let primaryReachable = false
+        let promoting = false
+
+        const poll = async () => {
+          if (Date.now() - startTime > timeoutMs) {
+            if (!primaryReachable) {
+              reject(new Error('timeout:unreachable'))
+            } else {
+              reject(new Error('timeout:no_extension'))
+            }
+            return
+          }
+
+          const health = await this.checkPrimaryHealth()
+          if (health.connected) {
+            resolve()
+            return
+          }
+
+          if (health.error?.includes('not reachable') && !promoting) {
+            // PRIMARY 不可达 — 尝试接管端口
+            promoting = true
+            const promoted = await this.tryPromote()
+            if (promoted) {
+              // 成功接管，等待 Extension 直连
+              const remaining = timeoutMs - (Date.now() - startTime)
+              if (remaining <= 0) {
+                reject(new Error('timeout:no_extension'))
+                return
+              }
+
+              if (this.client && this.client.readyState === WS_OPEN) {
+                resolve()
+                return
+              }
+
+              const promoteTimeout = setTimeout(() => {
+                const index = this.connectionResolvers.indexOf(resolve)
+                if (index > -1) this.connectionResolvers.splice(index, 1)
+                reject(new Error('timeout:no_extension'))
+              }, remaining)
+
+              this.connectionResolvers.push(() => {
+                clearTimeout(promoteTimeout)
+                resolve()
+              })
+              return
+            }
+            // 接管失败，继续轮询
+            promoting = false
+          } else if (!health.error?.includes('not reachable')) {
+            primaryReachable = true
+          }
+
+          setTimeout(poll, pollInterval)
+        }
+
+        poll()
+      })
+    }
   }
 
   /**
@@ -267,16 +339,79 @@ export class ExtensionBridge {
     if (this.isServerMode) {
       return this.requestInternal<T>(method, params)
     } else {
-      // Secondary 模式：先检查 Primary 健康状态
+      return this.requestViaSecondary<T>(method, params)
+    }
+  }
+
+  /**
+   * SECONDARY 模式请求（带重试 + 自动接管）
+   */
+  private async requestViaSecondary<T = unknown>(
+    method: string,
+    params?: Record<string, unknown>,
+    maxRetries: number = 3
+  ): Promise<T> {
+    let lastError: Error | null = null
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      // 如果已经升级为 PRIMARY，直接走 internal
+      if (this.isServerMode) {
+        return this.requestInternal<T>(method, params)
+      }
+
+      // 重试前等待（首次不等）
+      if (attempt > 0) {
+        const delay = Math.min(1000 * Math.pow(2, attempt - 1), 5000)
+        if (!this.silent) console.error(`[Bridge] SECONDARY retry ${attempt}/${maxRetries} in ${delay}ms...`)
+        await new Promise(resolve => setTimeout(resolve, delay))
+      }
+
+      // 检查 PRIMARY 健康状态
       const health = await this.checkPrimaryHealth()
       if (!health.connected) {
-        throw new Error(
-          health.error ||
-          'Primary MCP instance not available. Please ensure only one Claude Code session is using MCP.'
-        )
+        if (health.error?.includes('not reachable')) {
+          // PRIMARY 已退出，尝试接管
+          if (!this.silent) console.error('[Bridge] PRIMARY gone during request, attempting takeover...')
+          const promoted = await this.tryPromote()
+          if (promoted) {
+            // 等 Extension 重新连接（温热重连应该很快）
+            if (!this.client || this.client.readyState !== WS_OPEN) {
+              if (!this.silent) console.error('[Bridge] Waiting for Extension to reconnect...')
+              await this.waitForConnection(30000)
+            }
+            return this.requestInternal<T>(method, params)
+          }
+        }
+        lastError = new Error(health.error || 'Primary instance not available.')
+        continue
       }
-      return this.requestViaHttp<T>(method, params)
+
+      // 转发请求
+      try {
+        return await this.requestViaHttp<T>(method, params)
+      } catch (error) {
+        lastError = error as Error
+      }
     }
+
+    throw lastError!
+  }
+
+  /**
+   * 尝试接管端口，升级为 PRIMARY
+   */
+  private async tryPromote(): Promise<boolean> {
+    for (let i = 0; i < 5; i++) {
+      try {
+        await this.startServer()
+        this.isServerMode = true
+        if (!this.silent) console.error(`[Bridge] Promoted to PRIMARY (WebSocket: ${this.port}, HTTP: ${this.port + 1})`)
+        return true
+      } catch {
+        await new Promise(r => setTimeout(r, 1000))
+      }
+    }
+    return false
   }
 
   /**

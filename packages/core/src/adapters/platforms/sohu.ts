@@ -59,8 +59,9 @@ export class SohuAdapter extends CodeAdapter {
 
   async checkAuth(): Promise<AuthResult> {
     try {
+      // 使用 /account/list 获取所有子账号（搜狐号支持多个子账号）
       const response = await this.runtime.fetch(
-        `https://mp.sohu.com/mpbp/bp/account/register-info?_=${Date.now()}`,
+        `https://mp.sohu.com/mpbp/bp/account/list?_=${Date.now()}`,
         {
           method: 'GET',
           credentials: 'include',
@@ -70,25 +71,47 @@ export class SohuAdapter extends CodeAdapter {
       const res = await response.json() as {
         code: number
         data?: {
-          account: SohuAccountInfo
+          data?: Array<{
+            accounts: SohuAccountInfo[]
+          }>
         }
       }
 
-      logger.debug(' checkAuth response:', res)
+      logger.debug('checkAuth response:', res)
 
-      if (res.code !== 2000000 || !res.data?.account) {
+      if (res.code !== 2000000 || !res.data?.data?.[0]?.accounts?.length) {
         return { isAuthenticated: false }
       }
 
-      this.accountInfo = res.data.account
+      // 收集所有子账号
+      const allAccounts: SohuAccountInfo[] = []
+      for (const group of res.data.data) {
+        if (group.accounts) {
+          allAccounts.push(...group.accounts)
+        }
+      }
+
+      if (allAccounts.length === 0) {
+        return { isAuthenticated: false }
+      }
+
+      // 默认使用第一个子账号
+      this.accountInfo = allAccounts[0]
+      logger.info(`Using account: ${this.accountInfo.nickName} (id: ${this.accountInfo.id})` +
+        (allAccounts.length > 1 ? `, ${allAccounts.length} sub-accounts available` : ''))
 
       // 获取 mp-cv cookie 用于 sp-cm header
       await this.fetchSpCm()
 
+      // 如果有多个子账号，在用户名中标注
+      const displayName = allAccounts.length > 1
+        ? `${this.accountInfo.nickName} (共${allAccounts.length}个子账号)`
+        : this.accountInfo.nickName
+
       return {
         isAuthenticated: true,
         userId: String(this.accountInfo.id),
-        username: this.accountInfo.nickName,
+        username: displayName,
         avatar: this.accountInfo.avatar,
       }
     } catch (error) {

@@ -28,6 +28,7 @@ import {
 import { checkSyncFrequency, recordSync } from '../lib/rate-limit'
 import { retrieveLargePayload, cleanupStalePayloads } from '../lib/large-message'
 import { checkForUpdates, isUpdateDismissed } from '../lib/version-check'
+import { fetchRemoteConfig, fetchConfigIfNeeded } from '../lib/remote-config'
 
 const logger = createLogger('Background')
 
@@ -75,14 +76,12 @@ async function updateBadge(state: ActiveSyncState | null) {
     return
   }
 
-  const completed = state.results.length
-  const total = state.selectedPlatforms.length
-
   if (state.status === 'syncing') {
-    await chrome.action.setBadgeText({ text: `${completed}/${total}` })
-    await chrome.action.setBadgeBackgroundColor({ color: BADGE_COLORS.syncing })
+    // 同步中不显示 badge，避免卡住后残留
+    await chrome.action.setBadgeText({ text: '' })
   } else if (state.status === 'completed') {
     const successCount = state.results.filter(r => r.success).length
+    const total = state.selectedPlatforms.length
     const failedCount = total - successCount
 
     if (failedCount === 0) {
@@ -96,13 +95,13 @@ async function updateBadge(state: ActiveSyncState | null) {
       await chrome.action.setBadgeBackgroundColor({ color: BADGE_COLORS.partial })
     }
 
-    // 8秒后清除 badge
+    // 5秒后清除 badge
     setTimeout(async () => {
       const storage = await chrome.storage.local.get(SYNC_STATE_KEY)
       if (storage[SYNC_STATE_KEY]?.status === 'completed') {
         await chrome.action.setBadgeText({ text: '' })
       }
-    }, 8000)
+    }, 5000)
   }
 }
 
@@ -134,6 +133,9 @@ type MessageAction =
   | { type: 'MCP_ENABLE' }
   | { type: 'MCP_DISABLE' }
   | { type: 'MCP_STATUS' }
+  | { type: 'MCP_SET_SERVER_URL'; payload: { url: string } }
+  | { type: 'MCP_WATCH_START' }
+  | { type: 'MCP_WATCH_STOP' }
   | { type: 'TRACK_ARTICLE_EXTRACT'; payload: { source: string; success: boolean; hasTitle?: boolean; hasContent?: boolean; hasCover?: boolean; contentLength?: number } }
   | { type: 'GET_SYNC_STATE' }
   | { type: 'CLEAR_SYNC_STATE' }
@@ -193,7 +195,10 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
           cmsType: a.type,
         }))
 
-      return { platforms: [...dslWithType, ...cmsPlatforms] }
+      const allPlatforms = [...dslWithType, ...cmsPlatforms]
+      // 缓存完整平台列表，供 popup 启动时立即渲染
+      chrome.storage.local.set({ platformListCache: allPlatforms }).catch(() => {})
+      return { platforms: allPlatforms }
     }
 
     case 'CHECK_AUTH': {
@@ -245,11 +250,13 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
       const dslPlatformIds = platforms.filter((id: string) => !cmsAccountIds.has(id))
       const cmsPlatformIds = platforms.filter((id: string) => cmsAccountIds.has(id))
 
-      // 如果没有 platformContents，请求 content script 预处理
+      // 同源平台跳过预处理（如微信到微信，源内容已是目标格式）
+      const sourcePlatform = article.source?.platform
+      const platformsToPreprocess = dslPlatformIds.filter((id: string) => id !== sourcePlatform)
       let processedArticle = article
-      if (!article.platformContents && dslPlatformIds.length > 0) {
+      if (!article.platformContents && platformsToPreprocess.length > 0) {
         try {
-          const configs = getPlatformPreprocessConfigs(dslPlatformIds)
+          const configs = getPlatformPreprocessConfigs(platformsToPreprocess)
           const rawHtml = article.html || article.content || ''
           if (rawHtml) {
             // 获取目标 tabId：优先使用 sender tab，否则获取当前活动标签页
@@ -262,7 +269,7 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
             if (targetTabId) {
               const response = await chrome.tabs.sendMessage(targetTabId, {
                 type: 'PREPROCESS_FOR_PLATFORMS',
-                payload: { rawHtml, platforms: dslPlatformIds, configs },
+                payload: { rawHtml, platforms: platformsToPreprocess, configs },
               })
               if (response?.platformContents) {
                 processedArticle = { ...article, platformContents: response.platformContents }
@@ -449,7 +456,7 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
         .filter(r => r.success)
         .map(r => r.platform)
       if (successfulPlatforms.length > 0) {
-        recordSync(successfulPlatforms).catch(() => { })
+        recordSync(successfulPlatforms).catch(() => {})
       }
 
       return { results: allResults, rateLimitWarning, syncId }
@@ -584,7 +591,7 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
 
         // 记录同步频率
         if (result.success) {
-          recordSync([accountId]).catch(() => { })
+          recordSync([accountId]).catch(() => {})
         }
 
         return {
@@ -616,11 +623,14 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
 
     case 'MCP_ENABLE': {
       // 检查是否已有 token，没有才生成新的
-      const storage = await chrome.storage.local.get('mcpToken')
+      const storage = await chrome.storage.local.get(['mcpToken', 'mcpServerUrl'])
       const token = storage.mcpToken || crypto.randomUUID()
       await chrome.storage.local.set({ mcpEnabled: true, mcpToken: token })
-      // 设置 token 并启动客户端
+      // 设置 token、服务器地址并启动客户端
       mcpClient.setToken(token)
+      if (storage.mcpServerUrl) {
+        mcpClient.setServerUrl(storage.mcpServerUrl)
+      }
       startMcpClient()
       logger.info(' MCP enabled')
       trackMcpUsage('enable').catch(() => { })
@@ -639,13 +649,38 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
       return { success: true }
     }
 
+    case 'MCP_SET_SERVER_URL': {
+      const url = message.payload.url
+      await chrome.storage.local.set({ mcpServerUrl: url || '' })
+      mcpClient.setServerUrl(url)
+      // 地址变更后，断开重连
+      if (mcpClient.isConnected()) {
+        mcpClient.disconnect()
+        mcpClient.resetReconnect()
+      } else {
+        mcpClient.resetReconnect()
+      }
+      return { success: true }
+    }
+
+    case 'MCP_WATCH_START': {
+      mcpClient.setActivelyWatched(true)
+      return { success: true }
+    }
+
+    case 'MCP_WATCH_STOP': {
+      mcpClient.setActivelyWatched(false)
+      return { success: true }
+    }
+
     case 'MCP_STATUS': {
-      const storage = await chrome.storage.local.get(['mcpEnabled', 'mcpToken'])
+      const storage = await chrome.storage.local.get(['mcpEnabled', 'mcpToken', 'mcpServerUrl'])
       const mcpStatus = getMcpStatus()
       return {
         enabled: storage.mcpEnabled ?? false,
         connected: mcpStatus.connected,
         token: storage.mcpToken,  // 返回 token 供 MCP Server 使用
+        serverUrl: storage.mcpServerUrl || '',
       }
     }
 
@@ -885,7 +920,7 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
         .filter((r: any) => r.success)
         .map((r: any) => r.platform)
       if (successfulPlatforms.length > 0) {
-        recordSync(successfulPlatforms).catch(() => { })
+        recordSync(successfulPlatforms).catch(() => {})
       }
 
       return { results: allResults, rateLimitWarning, syncId }
@@ -1289,6 +1324,9 @@ chrome.runtime.onInstalled.addListener(async details => {
   // 追踪安装/更新
   trackInstall(details.reason, details.previousVersion).catch(() => { })
 
+  // 拉取远程配置
+  fetchRemoteConfig().catch(() => {})
+
   // 记录安装时间（用于首次同步追踪）
   if (details.reason === 'install') {
     recordInstallTimestamp().catch(() => { })
@@ -1299,8 +1337,12 @@ chrome.runtime.onInstalled.addListener(async details => {
     const previousVersion = details.previousVersion || '0.0.0'
     const currentVersion = chrome.runtime.getManifest().version
 
-    // 从 1.x 升级到 2.x，显示更新日志
-    if (previousVersion.startsWith('1.') && currentVersion.startsWith('2.')) {
+    // 重要版本升级时显示更新日志
+    const showChangelogVersions = ['2.0.8']
+    if (
+      showChangelogVersions.includes(currentVersion) ||
+      (previousVersion.startsWith('1.') && currentVersion.startsWith('2.'))
+    ) {
       chrome.tabs.create({
         url: 'https://www.wechatsync.com/changelog?from=' + previousVersion + '&to=' + currentVersion,
         active: true,
@@ -1321,7 +1363,7 @@ chrome.runtime.onInstalled.addListener(async details => {
  * 启动时初始化 MCP（如果已启用）
  */
 async function initMcpIfEnabled() {
-  const storage = await chrome.storage.local.get(['mcpEnabled', 'mcpToken'])
+  const storage = await chrome.storage.local.get(['mcpEnabled', 'mcpToken', 'mcpServerUrl'])
   if (storage.mcpEnabled) {
     if (storage.mcpToken) {
       mcpClient.setToken(storage.mcpToken)
@@ -1332,6 +1374,10 @@ async function initMcpIfEnabled() {
       await chrome.storage.local.set({ mcpToken: token })
       mcpClient.setToken(token)
       logger.info(' Starting MCP client with new token...')
+    }
+    // 加载自定义服务器地址（支持远程桥接）
+    if (storage.mcpServerUrl) {
+      mcpClient.setServerUrl(storage.mcpServerUrl)
     }
     startMcpClient()
   }
@@ -1365,9 +1411,14 @@ preCheckPlatformsAuth()
 
 // 设置每日增长指标追踪
 chrome.alarms.create('daily_growth_metrics', { periodInMinutes: 24 * 60 })
+// 设置远程配置定期拉取（每 6 小时）
+chrome.alarms.create('remote_config_fetch', { periodInMinutes: 6 * 60 })
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'daily_growth_metrics') {
     trackGrowthMetrics().catch(() => { })
+  }
+  if (alarm.name === 'remote_config_fetch') {
+    fetchRemoteConfig().catch(() => {})
   }
 })
 
@@ -1388,6 +1439,45 @@ checkForUpdates().then(async (result) => {
     }
   }
 }).catch(() => { })
+
+/**
+ * 清理遗留的动态规则（防止扩展崩溃后规则残留影响其他网站）
+ */
+async function clearOrphanedRules() {
+  try {
+    const rules = await chrome.declarativeNetRequest.getDynamicRules()
+    if (rules.length > 0) {
+      logger.info(`Clearing ${rules.length} orphaned dynamic rules...`)
+      await chrome.declarativeNetRequest.updateDynamicRules({
+        removeRuleIds: rules.map(r => r.id),
+      })
+      logger.info('Orphaned rules cleared')
+    }
+  } catch (error) {
+    logger.error('Failed to clear orphaned rules:', error)
+  }
+}
+
+// 启动时清理遗留规则
+clearOrphanedRules()
+
+// 首次启动时拉取远程配置（带缓存检查）
+fetchConfigIfNeeded().catch(() => {})
+
+// 检查版本更新（用于 ZIP 安装用户）
+// 如有新版本，在扩展图标上显示 badge 提醒
+checkForUpdates().then(async (result) => {
+  if (result.hasUpdate && result.info) {
+    // 检查用户是否已忽略此版本
+    const isDismissed = await isUpdateDismissed(result.info.version)
+    if (!isDismissed) {
+      // 显示更新 badge
+      await chrome.action.setBadgeText({ text: 'NEW' })
+      await chrome.action.setBadgeBackgroundColor({ color: BADGE_COLORS.update })
+      logger.info('Update badge shown for version:', result.info.version)
+    }
+  }
+}).catch(() => {})
 
 /**
  * 清理遗留的动态规则（防止扩展崩溃后规则残留影响其他网站）

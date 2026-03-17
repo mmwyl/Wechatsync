@@ -25,7 +25,7 @@ export class DoubanAdapter extends CodeAdapter {
   readonly meta: PlatformMeta = {
     id: 'douban',
     name: '豆瓣',
-    icon: 'https://img3.doubanio.com/favicon.ico',
+    icon: 'https://www.douban.com/favicon.ico',
     homepage: 'https://www.douban.com/note/create',
     capabilities: ['article', 'draft', 'image_upload'],
   }

@@ -7,6 +7,7 @@
 import {
   syncToMultiplePlatforms,
   getAllPlatformMetas,
+  getPlatformPreprocessConfigs,
   type SyncDetailProgress,
 } from '../adapters'
 import * as wordpressAdapter from '../adapters/cms/wordpress'
@@ -22,6 +23,7 @@ export interface SyncResult {
   success: boolean
   postUrl?: string
   draftOnly?: boolean
+  message?: string
   error?: string
 }
 
@@ -96,14 +98,12 @@ async function updateBadge(state: ActiveSyncState | null) {
     return
   }
 
-  const completed = state.results.length
-  const total = state.selectedPlatforms.length
-
   if (state.status === 'syncing') {
-    await chrome.action.setBadgeText({ text: `${completed}/${total}` })
-    await chrome.action.setBadgeBackgroundColor({ color: BADGE_COLORS.syncing })
+    // 同步中不显示 badge，避免卡住后残留
+    await chrome.action.setBadgeText({ text: '' })
   } else if (state.status === 'completed') {
     const successCount = state.results.filter(r => r.success).length
+    const total = state.selectedPlatforms.length
     const failedCount = total - successCount
 
     if (failedCount === 0) {
@@ -117,13 +117,13 @@ async function updateBadge(state: ActiveSyncState | null) {
       await chrome.action.setBadgeBackgroundColor({ color: BADGE_COLORS.partial })
     }
 
-    // 8秒后清除 badge
+    // 5秒后清除 badge
     setTimeout(async () => {
       const storage = await chrome.storage.local.get(SYNC_STATE_KEY)
       if (storage[SYNC_STATE_KEY]?.status === 'completed') {
         await chrome.action.setBadgeText({ text: '' })
       }
-    }, 8000)
+    }, 5000)
   } else if (state.status === 'failed' || state.status === 'cancelled') {
     await chrome.action.setBadgeText({ text: '!' })
     await chrome.action.setBadgeBackgroundColor({ color: BADGE_COLORS.error })
@@ -133,7 +133,7 @@ async function updateBadge(state: ActiveSyncState | null) {
       if (storage[SYNC_STATE_KEY]?.status === 'failed' || storage[SYNC_STATE_KEY]?.status === 'cancelled') {
         await chrome.action.setBadgeText({ text: '' })
       }
-    }, 8000)
+    }, 5000)
   }
 }
 
@@ -280,11 +280,31 @@ export async function performSync(
     await createHistoryItem(syncId, normalizedArticle, platforms)
   }
 
+  // 预处理内容（与 SYNC_ARTICLE 路径一致）
+  // MCP/CLI 路径没有 senderTabId，需要找一个可用 tab 做 DOM 预处理
+  // 同源平台跳过预处理（如微信到微信）
+  const sourcePlatform = (article as any).source?.platform
+  const platformsToPreprocess = dslPlatformIds.filter((id: string) => id !== sourcePlatform)
+  let processedArticle: typeof normalizedArticle & { platformContents?: Record<string, { html: string; markdown: string }> } = normalizedArticle
+  if (platformsToPreprocess.length > 0) {
+    const configs = getPlatformPreprocessConfigs(platformsToPreprocess)
+    const rawHtml = normalizedArticle.html || normalizedArticle.content || ''
+    if (rawHtml) {
+      const preprocessResult = await sendPreprocessMessage(rawHtml, platformsToPreprocess, configs)
+      if (preprocessResult) {
+        processedArticle = { ...normalizedArticle, platformContents: preprocessResult }
+        logger.debug('Preprocessed for platforms:', Object.keys(preprocessResult))
+      } else {
+        logger.warn('DOM preprocessing unavailable — please ensure at least one web page is open in Chrome')
+      }
+    }
+  }
+
   const allResults: SyncResult[] = []
 
   // 同步到 DSL 平台
   if (dslPlatformIds.length > 0) {
-    await syncToMultiplePlatforms(dslPlatformIds, normalizedArticle, {
+    await syncToMultiplePlatforms(dslPlatformIds, processedArticle, {
       onResult: (result) => {
         const resultWithName: SyncResult = {
           ...result,
@@ -369,6 +389,7 @@ export async function performSync(
         success: result.success,
         postUrl: result.postUrl,
         draftOnly: true,
+        message: result.message,
         error: result.error,
       }
       allResults.push(cmsResult)
@@ -417,3 +438,107 @@ export async function performSync(
 
   return { results: allResults, syncId }
 }
+
+/**
+ * 查找可用 tab 并发送 PREPROCESS_FOR_PLATFORMS 消息
+ * 优先 active tab，否则遍历所有 http/https tab
+ */
+async function sendPreprocessMessage(
+  rawHtml: string,
+  platforms: string[],
+  configs: Record<string, unknown>
+): Promise<Record<string, { html: string; markdown: string }> | null> {
+  const message = {
+    type: 'PREPROCESS_FOR_PLATFORMS',
+    payload: { rawHtml, platforms, configs },
+  }
+
+  // 1. 优先尝试已有的 tab（content script 响应最快）
+  try {
+    const candidateTabIds: number[] = []
+
+    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true })
+    if (activeTab?.id && activeTab.url?.match(/^https?:\/\//)) {
+      candidateTabIds.push(activeTab.id)
+    }
+
+    const allTabs = await chrome.tabs.query({ url: ['http://*/*', 'https://*/*'] })
+    for (const tab of allTabs) {
+      if (tab.id && !candidateTabIds.includes(tab.id)) {
+        candidateTabIds.push(tab.id)
+      }
+    }
+
+    for (const tabId of candidateTabIds) {
+      try {
+        const response = await chrome.tabs.sendMessage(tabId, message)
+        if (response?.platformContents) return response.platformContents
+      } catch {
+        continue
+      }
+    }
+  } catch (error) {
+    logger.debug('Tab preprocess failed:', error)
+  }
+
+  // 2. 没有可用 tab，创建临时扩展页面 tab 用于预处理
+  return await preprocessViaTemporaryTab(message)
+}
+
+const PREPROCESSOR_URL = chrome.runtime.getURL('src/preprocessor/index.html')
+
+/**
+ * 创建临时最小化窗口加载预处理页面，处理完后关闭
+ * 使用独立窗口避免在用户 tab 栏闪烁
+ */
+async function preprocessViaTemporaryTab(
+  message: { type: string; payload: unknown }
+): Promise<Record<string, { html: string; markdown: string }> | null> {
+  let windowId: number | undefined
+  let tabId: number | undefined
+  try {
+    const win = await chrome.windows.create({
+      url: PREPROCESSOR_URL,
+      type: 'popup',
+      width: 1,
+      height: 1,
+      left: 0,
+      top: 0,
+      focused: false,
+    })
+    windowId = win.id
+    tabId = win.tabs?.[0]?.id
+    if (!tabId) return null
+
+    // 等待 tab 加载完成
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        chrome.tabs.onUpdated.removeListener(listener)
+        reject(new Error('Tab load timeout'))
+      }, 5000)
+      const listener = (id: number, info: chrome.tabs.TabChangeInfo) => {
+        if (id === tabId && info.status === 'complete') {
+          chrome.tabs.onUpdated.removeListener(listener)
+          clearTimeout(timeout)
+          resolve()
+        }
+      }
+      chrome.tabs.onUpdated.addListener(listener)
+    })
+
+    const response = await chrome.tabs.sendMessage(tabId, message)
+    if (response?.platformContents) {
+      logger.debug('Preprocessed via temporary window')
+      return response.platformContents
+    }
+    return null
+  } catch (error) {
+    logger.debug('Temporary window preprocess failed:', error)
+    return null
+  } finally {
+    if (windowId) {
+      chrome.windows.remove(windowId).catch(() => {})
+    }
+  }
+}
+

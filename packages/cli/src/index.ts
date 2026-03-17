@@ -446,34 +446,103 @@ function markdownToHtml(markdown: string): string {
 // ============ Bridge 连接 ============
 
 /**
+ * 检测占用端口的进程信息
+ */
+async function detectPortProcess(port: number): Promise<string | null> {
+  const { execSync } = await import('child_process')
+  try {
+    if (process.platform === 'win32') {
+      const output = execSync(`netstat -ano | findstr :${port} | findstr LISTENING`, { encoding: 'utf-8' })
+      const pid = output.trim().split(/\s+/).pop()
+      if (pid) {
+        const info = execSync(`tasklist /FI "PID eq ${pid}" /FO CSV /NH`, { encoding: 'utf-8' }).trim()
+        return `PID ${pid} (${info.split(',')[0]?.replace(/"/g, '') || 'unknown'})`
+      }
+    } else {
+      const output = execSync(`lsof -i :${port} -t 2>/dev/null`, { encoding: 'utf-8' }).trim()
+      if (output) {
+        const pid = output.split('\n')[0]
+        const cmdline = execSync(`ps -p ${pid} -o command= 2>/dev/null`, { encoding: 'utf-8' }).trim()
+        return `PID ${pid} (${cmdline.slice(0, 60)})`
+      }
+    }
+  } catch {
+    // 检测失败也没关系
+  }
+  return null
+}
+
+/**
  * 创建并连接 Bridge
  */
 async function createBridge(): Promise<ExtensionBridge | null> {
   const bridge = new ExtensionBridge(WS_PORT, { silent: true })
   const timeout = connectionTimeout
 
+  // 注册信号处理，确保进程退出时释放端口
+  const cleanup = () => {
+    bridge.stop()
+    process.exit(0)
+  }
+  process.on('SIGINT', cleanup)
+  process.on('SIGTERM', cleanup)
+
   const spinner = ora('启动服务...').start()
 
-  try {
-    await bridge.start()
+  await bridge.start()
+
+  if (bridge.getMode() === 'secondary') {
+    spinner.text = '检测到已有实例，等待其完成或接管端口...'
+  } else {
     spinner.text = '等待 Chrome Extension 连接...'
-  } catch (error: unknown) {
-    if ((error as NodeJS.ErrnoException).code === 'EADDRINUSE') {
-      spinner.fail(`端口 ${WS_PORT} 已被占用`)
-      console.log(chalk.gray('可能已有其他 wechatsync 实例在运行'))
-      return null
-    }
-    throw error
   }
 
   try {
     await bridge.waitForConnection(timeout)
-    spinner.succeed('Chrome Extension 已连接')
+    spinner.succeed(
+      bridge.getMode() === 'secondary'
+        ? 'Chrome Extension 已连接 (通过 PRIMARY 转发)'
+        : 'Chrome Extension 已连接'
+    )
     return bridge
-  } catch {
+  } catch (error) {
     spinner.stop()
-    showInstallGuide()
-    await promptOpenInstallPage()
+    const errMsg = (error as Error).message || ''
+
+    if (bridge.getMode() === 'secondary') {
+      if (errMsg.includes('timeout:unreachable')) {
+        // PRIMARY HTTP API 不可达 — 僵尸进程占了 WS 端口但没有 HTTP API
+        console.log()
+        console.log(chalk.red('连接超时: 端口被占用但无法与已有实例通讯'))
+        console.log(chalk.gray('可能是旧的 wechatsync 进程未正常退出'))
+        console.log()
+
+        const processInfo = await detectPortProcess(WS_PORT)
+        if (processInfo) {
+          console.log(chalk.yellow(`  端口 ${WS_PORT} 占用进程: ${processInfo}`))
+          console.log()
+        }
+
+        console.log(chalk.bold('解决方法:'))
+        if (process.platform === 'win32') {
+          console.log(`  1. 终止旧进程: ${chalk.cyan(`taskkill /F /PID <pid>`)}`)
+        } else {
+          console.log(`  1. 终止旧进程: ${chalk.cyan(`kill $(lsof -i :${WS_PORT} -t)`)}`)
+        }
+        console.log(`  2. 使用其他端口: ${chalk.cyan(`SYNC_WS_PORT=9600 wechatsync ...`)}`)
+      } else {
+        // PRIMARY 可达但 Extension 没连上
+        console.log()
+        console.log(chalk.red('连接超时: 已有实例正在运行但 Chrome Extension 未连接'))
+        console.log(chalk.gray('请确保 Chrome 扩展已启用「同步桥接」并且 Token 正确'))
+      }
+    } else {
+      // PRIMARY 模式超时：Extension 没连上来
+      showInstallGuide()
+      await promptOpenInstallPage()
+    }
+
+    console.log()
     bridge.stop()
     return null
   }

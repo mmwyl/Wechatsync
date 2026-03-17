@@ -39,18 +39,27 @@ interface PendingUpload {
   timeoutId: ReturnType<typeof setTimeout>
 }
 
+const DEFAULT_SERVER_URL = 'ws://localhost:9527'
+
 class McpClient {
   private ws: WebSocket | null = null
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
-  private serverUrl = 'ws://localhost:9527'
+  private serverUrl = DEFAULT_SERVER_URL
 
   // 安全验证 token
   private token: string | null = null
 
-  // 指数退避重连配置
+  // 温热/冷却双阶段重连配置
   private reconnectAttempts = 0
-  private readonly minReconnectInterval = 1000 // 1 秒
-  private readonly maxReconnectInterval = 30000 // 30 秒
+  private lastConnectedAt = 0 // 上次成功连接的时间戳
+  private activelyWatched = false // 用户正在查看设置页
+  private readonly WARM_WINDOW = 5 * 60 * 1000 // 5 分钟内视为温热
+  // 温热阶段：刚断开，快速重连
+  private readonly warmMinInterval = 500   // 500ms
+  private readonly warmMaxInterval = 5000  // 5s 封顶
+  // 冷却阶段：长时间未连接，减少资源消耗
+  private readonly coldMinInterval = 10000 // 10s
+  private readonly coldMaxInterval = 60000 // 60s 封顶
   private readonly maxReconnectAttempts = Infinity // mcpEnabled=true 时永远重试
 
   // 分片上传管理
@@ -71,6 +80,21 @@ class McpClient {
    */
   clearToken(): void {
     this.token = null
+  }
+
+  /**
+   * 设置服务器地址（支持远程桥接）
+   */
+  setServerUrl(url: string): void {
+    this.serverUrl = url || DEFAULT_SERVER_URL
+    logger.debug(`Server URL set to ${this.serverUrl}`)
+  }
+
+  /**
+   * 获取当前服务器地址
+   */
+  getServerUrl(): string {
+    return this.serverUrl
   }
 
   /**
@@ -102,6 +126,7 @@ class McpClient {
       this.ws.onopen = () => {
         logger.debug('Connected to MCP Server')
         this.reconnectAttempts = 0 // 重置重连计数
+        this.lastConnectedAt = Date.now() // 记录连接时间
         if (this.reconnectTimer) {
           clearTimeout(this.reconnectTimer)
           this.reconnectTimer = null
@@ -174,19 +199,52 @@ class McpClient {
   }
 
   private _doScheduleReconnect(): void {
-    // 指数退避：1s, 2s, 4s, 8s, 16s, 30s, 30s, ...
-    const interval = Math.min(
-      this.minReconnectInterval * Math.pow(2, this.reconnectAttempts),
-      this.maxReconnectInterval
-    )
+    // 温热/冷却双阶段退避
+    const timeSinceLastConnection = Date.now() - this.lastConnectedAt
+    const isWarm = this.activelyWatched
+      || (this.lastConnectedAt > 0 && timeSinceLastConnection < this.WARM_WINDOW)
 
-    logger.debug(`Reconnecting in ${interval / 1000}s...`)
+    let interval: number
+    if (isWarm) {
+      // 温热：刚断开，server 可能在重启，快速重连
+      // 500ms, 1s, 2s, 4s, 5s, 5s, ...
+      interval = Math.min(
+        this.warmMinInterval * Math.pow(2, this.reconnectAttempts),
+        this.warmMaxInterval
+      )
+    } else {
+      // 冷却：长时间未连接，server 可能没启动，慢速重试
+      // 10s, 20s, 40s, 60s, 60s, ...
+      interval = Math.min(
+        this.coldMinInterval * Math.pow(2, this.reconnectAttempts),
+        this.coldMaxInterval
+      )
+    }
+
+    logger.debug(`Reconnecting in ${interval / 1000}s (${isWarm ? 'warm' : 'cold'})...`)
 
     this.reconnectAttempts++
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null
       this.connect()
     }, interval)
+  }
+
+  /**
+   * 设置用户是否正在关注连接状态（如打开设置页）
+   * 关注时使用温热策略快速重连
+   */
+  setActivelyWatched(active: boolean): void {
+    this.activelyWatched = active
+    // 开始关注时，如果未连接，立即尝试重连
+    if (active && !this.isConnected()) {
+      this.reconnectAttempts = 0
+      if (this.reconnectTimer) {
+        clearTimeout(this.reconnectTimer)
+        this.reconnectTimer = null
+      }
+      this.connect()
+    }
   }
 
   /**
@@ -503,6 +561,9 @@ export function stopMcpClient(): void {
 }
 
 // 获取连接状态
-export function getMcpStatus(): { connected: boolean } {
-  return { connected: mcpClient.isConnected() }
+export function getMcpStatus(): { connected: boolean; serverUrl: string } {
+  return {
+    connected: mcpClient.isConnected(),
+    serverUrl: mcpClient.getServerUrl(),
+  }
 }

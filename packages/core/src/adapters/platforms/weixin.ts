@@ -53,10 +53,13 @@ export class WeixinAdapter extends CodeAdapter {
     capabilities: ['article', 'draft', 'image_upload'],
   }
 
-  /** 预处理配置: 微信公众号使用 HTML 格式 */
+  /** 预处理配置: 微信公众号使用 HTML 格式，处理代码块，移除非微信域名链接，压缩标签间空白 */
   readonly preprocessConfig = {
     outputFormat: 'html' as const,
     processCodeBlocks: true,
+    removeLinks: true,
+    keepLinkDomains: ['mp.weixin.qq.com', 'weixin.qq.com'],
+    compactHtml: true,
   }
 
   private weixinMeta: WeixinMeta | null = null
@@ -141,24 +144,26 @@ export class WeixinAdapter extends CodeAdapter {
         }
       }
 
-      // Use pre-processed HTML content directly
-      let content = article.html || ''
+      // 微信到微信：使用原始 HTML，跳过所有处理
+      let content = (article.source?.platform === 'weixin' && (article as any).rawHtml)
+        ? (article as any).rawHtml
+        : (article.html || '')
 
-      content = this.processLatex(content)
-
-      // 移除外部链接（微信不允许非微信域名的链接）
-      content = this.stripExternalLinks(content)
-
-      content = await this.processImages(
-        content,
-        (src) => this.uploadImageByUrl(src),
-        {
-          skipPatterns: ['mmbiz.qpic.cn', 'mmbiz.qlogo.cn'],
-          onProgress: options?.onImageProgress,
-        }
-      )
-
-      content = this.processContent(content)
+      if (article.source?.platform === 'weixin') {
+        logger.info('Source is WeChat, using raw HTML, skipping content processing')
+      } else {
+        content = this.processLatex(content)
+        content = this.stripExternalLinks(content)
+        content = await this.processImages(
+          content,
+          (src) => this.uploadImageByUrl(src),
+          {
+            skipPatterns: ['mmbiz.qpic.cn', 'mmbiz.qlogo.cn'],
+            onProgress: options?.onImageProgress,
+          }
+        )
+        content = this.processContent(content)
+      }
 
       const formData = new URLSearchParams({
         token: this.weixinMeta!.token,

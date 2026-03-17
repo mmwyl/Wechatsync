@@ -1,96 +1,85 @@
 ---
 name: wechatsync
-description: 同步文章到多个内容平台（知乎、掘金、CSDN、头条、微博等）。当用户想要发布或同步文章到内容平台时使用。
+description: "Multi-platform article publisher and content distribution tool. Sync and cross-post Markdown/HTML articles to 29+ platforms including Zhihu (知乎), Juejin (掘金), CSDN, Toutiao (头条), Weibo (微博), Xiaohongshu (小红书), Bilibili (B站), WordPress, Typecho, WeChat (微信公众号), and more. Use when the user wants to publish, sync, cross-post, or distribute articles (文章同步/多平台发布/一键发布) to Chinese content platforms, tech communities, blogging sites, or self-hosted blogs. Also use when checking platform login status or extracting articles from web pages. Keywords: content syndication, blog distribution, multi-platform publishing, self-media (自媒体), content creator tools."
+metadata:
+  openclaw:
+    requires:
+      env:
+        - WECHATSYNC_TOKEN
+      bins:
+        - wechatsync
+    primaryEnv: WECHATSYNC_TOKEN
+    emoji: "\U0001F4DD"
+    homepage: https://github.com/wechatsync/Wechatsync
+    install:
+      - kind: node
+        package: "@wechatsync/cli"
+        bins: [wechatsync]
 ---
 
 # WechatSync
 
-同步文章到多个内容平台（知乎、掘金、CSDN、头条、微博等 20+ 平台）。
+Publish and sync Markdown/HTML articles to 29+ content platforms via CLI.
 
-## 前置条件
+## Prerequisites
 
-1. 安装 CLI: `npm install -g @wechatsync/cli`
-2. 安装 Chrome 扩展: https://www.wechatsync.com/#install
-3. 在扩展设置中启用 MCP 连接，获取 Token
-4. 设置环境变量: `export WECHATSYNC_TOKEN="你的token"`
-5. 在各平台登录账号
+This skill requires external tools that the user must install themselves:
 
-## 命令
+1. **CLI tool** (`@wechatsync/cli`): Open-source npm package ([source code](https://github.com/wechatsync/Wechatsync/tree/v2/packages/cli)). Install with `npm install -g @wechatsync/cli`
+2. **Chrome extension**: Open-source browser extension ([source code](https://github.com/wechatsync/Wechatsync/tree/v2/packages/extension)). Install from [Chrome Web Store](https://chrome.google.com/webstore/detail/hchobocdmclopcbnibdnoafilagadion) or [download ZIP](https://www.wechatsync.com/#install)
+3. **Token**: User-generated token set in extension settings. The token is created locally by the user and used only for localhost communication between CLI and extension. Set via `export WECHATSYNC_TOKEN="your-token"`
+4. **Platform logins**: Log in to target platforms in browser (extension uses existing browser cookies, no credentials are stored or transmitted)
 
-### 同步文章
+**Security model**: All data stays local. The CLI communicates with the Chrome extension over localhost. The extension calls platform APIs directly from the browser using existing login sessions. No third-party server involved. Full source code is open and auditable.
 
-```bash
-# 同步到单个平台
-wechatsync sync article.md -p juejin
+Before running any command, confirm the user has completed the prerequisites. Do not install packages on the user's behalf without explicit consent.
 
-# 同步到多个平台
-wechatsync sync article.md -p juejin,zhihu,csdn
+## Commands
 
-# 指定标题
-wechatsync sync article.md -p juejin -t "我的文章标题"
-
-# 添加封面图
-wechatsync sync article.md -p juejin --cover ./cover.png
-
-# 预览（不实际同步）
-wechatsync sync article.md -p juejin --dry-run
-```
-
-### 查看平台
+### Sync
 
 ```bash
-# 列出所有平台
-wechatsync platforms
-
-# 显示登录状态
-wechatsync platforms --auth
+wechatsync sync article.md -p juejin              # single platform
+wechatsync sync article.md -p juejin,zhihu,csdn   # multiple platforms
+wechatsync sync article.md -p juejin -t "Title"   # custom title
+wechatsync sync article.md -p juejin --cover ./cover.png  # cover image
+wechatsync sync article.md -p juejin --dry-run     # preview only
 ```
 
-### 检查登录状态
+### Platforms & Auth
 
 ```bash
-# 检查所有平台
-wechatsync auth
-
-# 检查单个平台
-wechatsync auth zhihu
+wechatsync platforms          # list all platforms
+wechatsync platforms --auth   # show login status
+wechatsync auth zhihu         # check single platform
 ```
 
-### 提取文章
+### Extract
 
 ```bash
-# 从浏览器当前页面提取
-wechatsync extract
-
-# 保存到文件
-wechatsync extract -o article.md
+wechatsync extract              # extract from current browser page
+wechatsync extract -o article.md  # save to file
 ```
 
-## 支持的平台
+## Platform IDs
 
-zhihu, juejin, jianshu, toutiao, weibo, bilibili, baijiahao, csdn, yuque, douban, sohu, xueqiu, weixin, woshipm, dayu, yidian, 51cto, sohufocus, imooc, oschina, segmentfault, cnblogs, x, xiaohongshu
+zhihu, juejin, csdn, jianshu, toutiao, douyin, weibo, bilibili, xiaohongshu, baijiahao, weixin, yuque, douban, sohu, xueqiu, woshipm, dayu, yidian, 51cto, sohufocus, imooc, oschina, segmentfault, cnblogs, x, eastmoney, smzdm, netease, wordpress, typecho
 
-## 图片处理
+## Notes
 
-- 本地图片自动上传到第一个目标平台的图床
-- 其他平台会自动转存图片
-- 支持格式: PNG, JPG, GIF, WebP, SVG
+- Images auto-uploaded to target platform CDN (PNG, JPG, GIF, WebP, SVG)
+- Markdown title extracted from front matter `title` or first `# heading`
+- Articles sync as **drafts** by default — user reviews before publishing
 
-## 文章格式
+## Workflow
 
-支持 Markdown 和 HTML 文件。Markdown 文件标题从以下位置提取：
-1. YAML front matter 的 `title` 字段
-2. 第一个 `# 标题`
+1. Confirm prerequisites are installed (ask user if unsure)
+2. Check login: `wechatsync platforms --auth`
+3. Sync: `wechatsync sync <file> -p <platform1>,<platform2>`
+4. Report results with draft URLs
 
-## 示例
-
-用户: "把这篇文章同步到掘金和知乎"
-操作:
-1. 先用 `wechatsync platforms --auth` 检查登录状态
-2. 用 `wechatsync sync <文件路径> -p juejin,zhihu` 同步
-
-用户: "帮我看看哪些平台已登录"
-操作: `wechatsync platforms --auth`
-
-用户: "从浏览器提取当前文章保存下来"
-操作: `wechatsync extract -o article.md`
+Example prompts:
+- "Sync this article to Juejin and Zhihu"
+- "Which platforms am I logged into?"
+- "Extract the article from browser and save it"
+- "把这篇文章同步到掘金和知乎"

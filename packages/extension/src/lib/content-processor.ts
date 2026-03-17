@@ -103,8 +103,7 @@ export function preprocessForPlatform(rawHtml: string, config: PreprocessConfig)
 
   if (config.convertSectionToDiv) {
     convertSections(container, 'div')
-  }
-  if (config.convertSectionToP) {
+  } else if (config.convertSectionToP) {
     convertSections(container, 'p')
   }
 
@@ -131,6 +130,10 @@ export function preprocessForPlatform(rawHtml: string, config: PreprocessConfig)
 
   if (config.compactHtml) {
     compactHtml(container)
+  }
+
+  if (config.convertTablesToText) {
+    convertTablesToText(container)
   }
 
   // 清理空内容
@@ -255,88 +258,22 @@ function processLinks(container: HTMLElement, keepDomains?: string[]): void {
 
 /**
  * 处理懒加载图片
- * 增强版本：支持更多懒加载属性和 loading="lazy"
  */
 function processLazyImages(container: HTMLElement): void {
   const imgs = container.querySelectorAll('img')
-
-  // 扩展懒加载属性列表，支持更多平台的懒加载实现
-  const lazySrcAttrs = [
-    'data-src',
-    'data-original',
-    'data-actualsrc',
-    '_src',
-    'data-lazy-src',
-    'data-original-src',
-    'data-load-src',
-    'data-img-src',
-    'data-thumb-src',
-    'data-small-src',
-    'data-medium-src',
-    'data-large-src',
-    'data-srcset',
-    'data-lazyloaded',
-  ]
+  const lazySrcAttrs = ['data-src', 'data-original', 'data-actualsrc', '_src']
 
   imgs.forEach((img) => {
-    // 1. 处理 data-* 懒加载属性
-    let foundSrc = false
-
-    // 首先检查是否有 loading="lazy" 属性，如果有，尝试获取真实 src
-    if (img.getAttribute('loading') === 'lazy' && img.src && !img.src.startsWith('data:')) {
-      foundSrc = true
-    }
-
-    // 检查各种 data 属性
-    if (!foundSrc) {
-      for (const attr of lazySrcAttrs) {
-        const lazySrc = img.getAttribute(attr)
-        if (lazySrc && !lazySrc.startsWith('data:image/svg')) {
-          if (!img.src || img.src.startsWith('data:image/svg') || img.src === 'about:blank') {
-            img.src = lazySrc
-            foundSrc = true
-          }
-          break
+    for (const attr of lazySrcAttrs) {
+      const lazySrc = img.getAttribute(attr)
+      if (lazySrc && !lazySrc.startsWith('data:image/svg')) {
+        if (!img.src || img.src.startsWith('data:image/svg')) {
+          img.src = lazySrc
         }
+        break
       }
     }
-
-    // 2. 处理 srcset 属性（响应式图片）
-    const srcset = img.getAttribute('data-srcset') || img.getAttribute('srcset')
-    if (srcset && !foundSrc) {
-      // 从 srcset 中提取第一个图片 URL
-      const firstSrc = srcset.split(',')[0]?.trim().split(' ')[0]
-      if (firstSrc && !firstSrc.startsWith('data:image/svg')) {
-        img.src = firstSrc
-        // 保留 srcset 以便后续处理
-        img.setAttribute('data-original-srcset', srcset)
-      }
-    }
-
-    // 3. 移除 loading 属性（处理完后不再需要）
-    img.removeAttribute('loading')
-
-    // 4. 清理懒加载属性
     lazySrcAttrs.forEach(attr => img.removeAttribute(attr))
-  })
-
-  // 处理 picture 元素中的 source 懒加载
-  const pictures = container.querySelectorAll('picture')
-  pictures.forEach(picture => {
-    const sources = picture.querySelectorAll('source')
-    sources.forEach(source => {
-      const srcset = source.getAttribute('data-srcset') || source.getAttribute('srcset')
-      if (srcset) {
-        source.setAttribute('srcset', srcset)
-        source.removeAttribute('data-srcset')
-      }
-    })
-
-    // 确保 picture 中的 img 也被处理
-    const img = picture.querySelector('img')
-    if (img) {
-      processLazyImages(picture as HTMLElement)
-    }
   })
 }
 
@@ -400,7 +337,7 @@ function removeLineNumberSiblings(pre: Element): void {
  * 可作为代码行容器的标签
  * 这些标签通常用于包裹单行代码
  */
-const LINE_CONTAINER_TAGS = new Set(['CODE', 'DIV', 'P', 'LI'])
+const LINE_CONTAINER_TAGS = new Set(['CODE', 'DIV', 'SPAN', 'P', 'LI'])
 
 /**
  * 检查子元素是否构成有效的"多行结构"
@@ -425,7 +362,21 @@ function isValidLineStructure(children: Element[]): boolean {
 
   // 检查是否全是同一类型的行容器标签
   if (LINE_CONTAINER_TAGS.has(firstTag)) {
-    return children.every(child => child.tagName === firstTag)
+    const allSameTag = children.every(child => child.tagName === firstTag)
+    if (!allSameTag) return false
+
+    // 如果元素之间存在有意义的文本节点，说明这是内联结构（如 GitHub 语法高亮），
+    // 而非每行一个元素的多行结构
+    const parent = children[0].parentElement
+    if (parent) {
+      for (const node of Array.from(parent.childNodes)) {
+        if (node.nodeType === Node.TEXT_NODE && node.textContent?.trim()) {
+          return false
+        }
+      }
+    }
+
+    return true
   }
 
   // 检查是否全是 display:block 的元素（某些高亮库用自定义标签）
@@ -458,10 +409,7 @@ function isValidLineStructure(children: Element[]): boolean {
 function findLinesContainer(el: Element, depth: number): Element | null {
   if (depth > 4) return null
 
-  // 过滤掉被隐藏的行号元素
-  const children = Array.from(el.children).filter(child => {
-    return (child as HTMLElement).style?.display !== 'none'
-  })
+  const children = Array.from(el.children)
 
   // 检查当前元素是否是有效的多行容器
   if (isValidLineStructure(children)) {
@@ -505,10 +453,6 @@ function processCodeBlocks(container: HTMLElement): void {
     try {
       // 跳过已经被 backupAndSimplifyCodeBlocks 处理过的代码块
       if (pre.hasAttribute('data-code-simplified')) {
-        pre.removeAttribute('class')
-        pre.removeAttribute('style')
-        pre.removeAttribute('data-lang')
-        pre.removeAttribute('data-code-simplified')
         return
       }
 
@@ -523,70 +467,78 @@ function processCodeBlocks(container: HTMLElement): void {
 
       let newHtml: string
 
-      // 提取语言
-      let lang = pre.getAttribute('data-lang')
-      if (!lang) {
-        const code = pre.querySelector('code')
-        if (code) {
-          const match = code.className.match(/language-(\w+)/)
-          if (match) lang = match[1]
-        }
-      }
-      if (!lang) {
-        const match = pre.className.match(/language-(\w+)/)
-        if (match) lang = match[1]
-      }
-      if (!lang) lang = 'text'
-
-      let plainText: string
-
       if (linesContainer) {
         // 多行容器：每个子元素是一行代码
         const lines: string[] = []
         Array.from(linesContainer.children).forEach((child) => {
           const text = child.textContent || ''
-          lines.push(text)
+          lines.push(escapeHtml(text))
         })
-        plainText = lines.join('\n')
+        newHtml = lines.join('\n')
       } else {
-        // 普通格式：使用 clone 节点并用换行符替换 <br> 标签，从而安全获得格式纯净的 textContent
-        const code = pre.querySelector('code')
-        const targetEl = (code || pre) as HTMLElement
-        const clone = targetEl.cloneNode(true) as HTMLElement
-
-        // 人工替换 br 和块级结尾，避免因未挂载或特殊 display 造成的 innerText 脱行
-        clone.querySelectorAll('br').forEach(br => br.replaceWith('\n'))
-        clone.querySelectorAll('div, p, li').forEach(block => block.appendChild(document.createTextNode('\n')))
-
-        plainText = clone.textContent || ''
+        // 普通格式：用 innerText 提取（保留换行）
+        // 注意：如果代码块未经 backupAndSimplifyCodeBlocks 预处理，
+        // 在 detached DOM 上 innerText 可能无法正确处理 <br> 等
+        const text = pre.innerText || pre.textContent || ''
+        newHtml = `<code>${escapeHtml(text)}</code>`
       }
 
       // 清理：移除开头结尾空行
-      plainText = plainText
+      newHtml = newHtml
         .replace(/\r\n/g, '\n')
         .replace(/\r/g, '\n')
         .replace(/^\n+/, '')
         .replace(/\n+$/, '')
 
       // 空代码块跳过
-      if (!plainText.trim()) {
+      if (!newHtml.trim()) {
         pre.remove()
         return
       }
 
-      // 将换行替换为 <br>，强硬抵抗由于 CSS 丢失造成的微信和搜狐换行坍塌
-      const formattedHtml = escapeHtml(plainText).replace(/\n/g, '<br>')
-      pre.innerHTML = `<code class="language-${lang}" style="font-family: Consolas, Monaco, monospace; font-size: 14px; color: #333;">${formattedHtml}</code>`
-      pre.style.cssText = 'background-color: #f6f8fa; padding: 16px; border-radius: 8px; overflow: auto; word-wrap: break-word; white-space: pre-wrap; margin: 16px 0;'
+      // 提取语言信息（从 class="language-xxx" 或 data-lang）
+      const lang = detectCodeLang(pre)
 
-      // 不再单纯 removeAttribute，直接覆盖即可。因为我们已经设置了 style。
+      pre.innerHTML = newHtml
       pre.removeAttribute('class')
+      pre.removeAttribute('style')
       pre.removeAttribute('data-lang')
+
+      // 保留语言信息
+      if (lang) {
+        pre.setAttribute('data-lang', lang)
+        pre.className = `language-${lang}`
+      }
     } catch (e) {
       logger.error('processCodeBlocks error:', e)
     }
   })
 
+}
+
+/**
+ * 从 pre/code 元素的 class 或 data-lang 中提取语言标识
+ * 支持: class="language-js", class="lang-python", class="highlight-typescript", data-lang="go"
+ */
+function detectCodeLang(pre: Element): string | null {
+  // 检查 pre 和内部 code 元素
+  const elements = [pre, pre.querySelector('code')].filter(Boolean) as Element[]
+
+  for (const el of elements) {
+    // data-lang 属性
+    const dataLang = el.getAttribute('data-lang')
+    if (dataLang) return dataLang.trim().toLowerCase()
+
+    // class="language-xxx" / "lang-xxx" / "highlight-xxx"
+    const match = el.className.match(/(?:language|lang|highlight)-(\w+)/)
+    if (match) return match[1].toLowerCase()
+
+    // 微信 class="code-snippet__js" 等
+    const wxMatch = el.className.match(/code-snippet__(\w+)/)
+    if (wxMatch) return wxMatch[1].toLowerCase()
+  }
+
+  return null
 }
 
 /**
@@ -598,32 +550,10 @@ export function preprocessCodeBlocks(container: HTMLElement): void {
 
 /**
  * 移除没有有效 src 的 img 标签（src 缺失或为空字符串）
- * 改进：保留可能有懒加载属性的图片
  */
 function removeEmptyImages(container: HTMLElement): void {
-  // 懒加载属性列表
-  const lazyAttrs = [
-    'data-src',
-    'data-original',
-    'data-actualsrc',
-    '_src',
-    'data-lazy-src',
-    'data-original-src',
-    'data-load-src',
-    'data-img-src',
-    'data-srcset',
-    'loading',
-  ]
-
   container.querySelectorAll('img').forEach((img) => {
-    // 检查是否有懒加载属性，如果有则不删除
-    const hasLazyAttr = lazyAttrs.some(attr => img.hasAttribute(attr))
-    if (hasLazyAttr) {
-      return // 保留，等待懒加载处理
-    }
-
-    // 检查是否有有效 src
-    if (!img.src || img.src === window.location.href || img.src === 'about:blank') {
+    if (!img.src || img.src === window.location.href) {
       img.remove()
     }
   })
@@ -845,10 +775,10 @@ function compactHtml(container: HTMLElement): void {
       const next = node.nextSibling
       const parent = node.parentNode
 
-      // 在块级元素之间的空白可以移除
-      if (parent && parent.nodeName !== 'PRE' && parent.nodeName !== 'CODE') {
+      // 在块级元素之间的空白可以移除（跳过 pre/code 及其后代）
+      if (parent && !(parent as Element).closest?.('pre, code')) {
         if ((!prev || prev.nodeType === Node.ELEMENT_NODE) &&
-          (!next || next.nodeType === Node.ELEMENT_NODE)) {
+            (!next || next.nodeType === Node.ELEMENT_NODE)) {
           nodesToRemove.push(node)
         }
       }
@@ -952,6 +882,76 @@ function removeNestedEmptyContainers(container: HTMLElement): void {
 }
 
 /**
+ * 将表格转换为文本格式
+ * 有表头时: 每行格式化为 "列名: 值 | 列名: 值"
+ * 无表头时: 每行用 " | " 分隔各列
+ */
+function convertTablesToText(container: HTMLElement): void {
+  const tables = container.querySelectorAll('table')
+
+  tables.forEach((table) => {
+    // 提取表头
+    const headers: string[] = []
+    const theadRow = table.querySelector('thead tr')
+    if (theadRow) {
+      theadRow.querySelectorAll('th, td').forEach((cell) => {
+        headers.push(cell.textContent?.trim() || '')
+      })
+    }
+
+    // 提取所有数据行
+    const rows: string[][] = []
+    const bodyRows = table.querySelectorAll('tbody tr, tr')
+    bodyRows.forEach((row) => {
+      // 跳过表头行
+      if (row.parentElement?.tagName === 'THEAD') return
+      // 如果没有 thead，第一行全是 th 也视为表头
+      const cells = row.querySelectorAll('td, th')
+      if (headers.length === 0 && row === bodyRows[0]) {
+        const allTh = Array.from(cells).every((c) => c.tagName === 'TH')
+        if (allTh) {
+          cells.forEach((cell) => headers.push(cell.textContent?.trim() || ''))
+          return
+        }
+      }
+
+      const rowData: string[] = []
+      cells.forEach((cell) => {
+        rowData.push(cell.textContent?.trim() || '')
+      })
+      if (rowData.length > 0) {
+        rows.push(rowData)
+      }
+    })
+
+    // 构建替换内容
+    const fragment = document.createDocumentFragment()
+
+    if (headers.length > 0) {
+      // 有表头: "列名: 值 | 列名: 值"
+      rows.forEach((row) => {
+        const parts = row.map((val, i) => {
+          const header = headers[i] || ''
+          return header ? `${header}: ${val}` : val
+        })
+        const p = document.createElement('p')
+        p.textContent = parts.join(' | ')
+        fragment.appendChild(p)
+      })
+    } else {
+      // 无表头: 直接用 " | " 分隔
+      rows.forEach((row) => {
+        const p = document.createElement('p')
+        p.textContent = row.join(' | ')
+        fragment.appendChild(p)
+      })
+    }
+
+    table.replaceWith(fragment)
+  })
+}
+
+/**
  * 转义 HTML 特殊字符
  */
 function escapeHtml(text: string): string {
@@ -1036,7 +1036,7 @@ export function backupAndSimplifyCodeBlocks(root: Element = document.body): Elem
       const gutterDisplays: string[] = []
       gutterEls.forEach((el, i) => {
         gutterDisplays[i] = (el as HTMLElement).style.display
-          ; (el as HTMLElement).style.display = 'none'
+        ;(el as HTMLElement).style.display = 'none'
       })
 
       // 使用结构检测移除未知的行号元素（临时）
@@ -1045,21 +1045,6 @@ export function backupAndSimplifyCodeBlocks(root: Element = document.body): Elem
 
       // 查找代码行容器（与 processCodeBlocks 相同的逻辑）
       const linesContainer = findCodeLinesContainer(pre)
-
-      // 尝试提取语言
-      let lang = pre.getAttribute('data-lang')
-      if (!lang) {
-        const code = pre.querySelector('code')
-        if (code) {
-          const match = code.className.match(/language-(\w+)/)
-          if (match) lang = match[1]
-        }
-      }
-      if (!lang) {
-        const match = pre.className.match(/language-(\w+)/)
-        if (match) lang = match[1]
-      }
-      if (!lang) lang = 'text'
 
       let cleanedText: string
 
@@ -1072,22 +1057,15 @@ export function backupAndSimplifyCodeBlocks(root: Element = document.body): Elem
         })
         cleanedText = lines.join('\n')
       } else {
-        // 普通格式：使用 clone 节点并用换行符替换 <br> 标签，从而安全获得格式纯净的 textContent
+        // 普通格式：用 innerText 提取（在真实 DOM 上能正确处理 br 等）
         const code = pre.querySelector('code')
         const targetEl = (code || pre) as HTMLElement
-        const clone = targetEl.cloneNode(true) as HTMLElement
-
-        // 由于 innerText 可能受当前元素的 CSS display 影响产生不正确的换行，
-        // 这里手动将 br 转换为真正的折行符，并保证 div 等块级元素带有换行，之后直接取纯文本。
-        clone.querySelectorAll('br').forEach(br => br.replaceWith('\n'))
-        clone.querySelectorAll('div, p, li').forEach(block => block.appendChild(document.createTextNode('\n')))
-
-        cleanedText = clone.textContent || ''
+        cleanedText = targetEl.innerText || ''
       }
 
       // 恢复行号显示
       gutterEls.forEach((el, i) => {
-        ; (el as HTMLElement).style.display = gutterDisplays[i]
+        ;(el as HTMLElement).style.display = gutterDisplays[i]
       })
 
       // 清理首尾空白
@@ -1103,16 +1081,23 @@ export function backupAndSimplifyCodeBlocks(root: Element = document.body): Elem
       logger.debug('[backupAndSimplifyCodeBlocks] original:', originalHTML.slice(0, 100))
       logger.debug('[backupAndSimplifyCodeBlocks] cleaned text:', cleanedText.slice(0, 100))
 
+      // 在替换 innerHTML 前检测语言（之后 data-lang/class 会丢失）
+      const lang = detectCodeLang(pre)
+
       backups.push({
         element: pre,
         originalHTML: originalHTML,
       })
 
-      // 替换为纯文本，添加标记表示已处理，将换行转换为 <br> 以对抗各平台的换行吞噬
-      const formattedHtml = escapeHtml(cleanedText).replace(/\n/g, '<br>')
-      pre.innerHTML = `<code class="language-${lang}" style="font-family: Consolas, Monaco, monospace; font-size: 14px; color: #333;">${formattedHtml}</code>`
-      pre.style.cssText = 'background-color: #f6f8fa; padding: 16px; border-radius: 8px; overflow: auto; word-wrap: break-word; white-space: pre-wrap; margin: 16px 0;'
+      // 替换为纯文本，添加标记表示已处理
+      pre.innerHTML = `<code>${escapeHtml(cleanedText)}</code>`
       pre.setAttribute('data-code-simplified', 'true')
+
+      // 保留语言信息到标准格式
+      if (lang) {
+        pre.setAttribute('data-lang', lang)
+        pre.className = `language-${lang}`
+      }
     } catch (e) {
       logger.error('[backupAndSimplifyCodeBlocks] error:', e)
     }

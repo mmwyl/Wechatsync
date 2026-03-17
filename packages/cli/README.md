@@ -98,6 +98,49 @@ CLI 启动后监听 WebSocket 端口，等待 Chrome 扩展连接。
 | `SYNC_WS_PORT` | WebSocket 端口 | 9527 |
 | `WECHATSYNC_TOKEN` | 安全验证 token | - |
 
+## 远程桥接
+
+CLI 支持在服务器上运行，连接本地电脑上的 Chrome 扩展。适用于在远程开发机或 CI 环境中同步文章，同时利用本地浏览器的登录态。
+
+### 架构
+
+```
+┌─────────────────┐                        ┌─────────────────────┐
+│  远程服务器       │     WebSocket          │  本地电脑            │
+│                 │     port 9527           │                     │
+│  wechatsync CLI │◄───────────────────────►│  Chrome Extension   │
+│  / MCP Server   │                         │  (浏览器登录态)      │
+└─────────────────┘                         └─────────────────────┘
+```
+
+### 配置步骤
+
+**1. 服务器端** - 正常启动 CLI 或 MCP Server：
+
+```bash
+# CLI
+WECHATSYNC_TOKEN=your-token wechatsync sync article.md -p zhihu
+
+# MCP Server
+MCP_TOKEN=your-token node packages/mcp-server/dist/index.js
+```
+
+服务器默认监听 `0.0.0.0:9527`（所有网络接口），远程可直接连接。
+
+**2. 本地浏览器** - 在 Chrome 扩展设置中：
+
+1. 开启「同步桥接」开关
+2. 在「服务器地址」输入框填入远程地址，例如 `ws://192.168.1.100:9527`
+3. 确保 Token 与服务器端一致
+
+扩展会自动连接远程服务器，连接成功后即可远程同步。
+
+### 注意事项
+
+- 确保服务器防火墙放行 9527 端口（可通过 `SYNC_WS_PORT` 自定义）
+- Token 在传输中以明文发送，生产环境建议配合 SSH 隧道或 VPN 使用
+- 每个 Token 只允许一个扩展连接
+
 ## Claude Code 集成
 
 安装 Skill 插件：

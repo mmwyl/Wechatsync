@@ -9,7 +9,6 @@ import {
   trackImplicitFeedback,
 } from '../../lib/analytics'
 import { checkSyncFrequency } from '../../lib/rate-limit'
-import { storeLargePayload } from '../../lib/large-message'
 import { createLogger } from '../../lib/logger'
 
 const logger = createLogger('SyncStore')
@@ -152,7 +151,6 @@ interface SyncState {
   updateDetailProgress: (progress: PlatformProgress) => void
   clearSyncState: () => Promise<void>
   updateArticle: (updates: Partial<Article>) => void
-  setArticle: (article: Article) => void
   clearRateLimitWarning: () => void
 }
 
@@ -247,10 +245,6 @@ export const useSyncStore = create<SyncState>((set, get) => ({
         },
       })
     }
-  },
-
-  setArticle: (article) => {
-    set({ article })
   },
 
   loadPlatforms: async () => {
@@ -407,16 +401,11 @@ export const useSyncStore = create<SyncState>((set, get) => ({
     set({ status: 'syncing', results: [], error: null, imageProgress: null, platformProgress: new Map(), currentSyncId: syncId })
 
     try {
-      // 大数据通过 storage 中转，避免 runtime.sendMessage 的 64MiB 限制
-      const storageKey = await storeLargePayload(syncId, {
-        article, platforms: selectedPlatforms, syncId,
-      })
-
       // SYNC_ARTICLE 现在同时处理 DSL 和 CMS 平台
-      // 消息只传轻量引用
+      // 传递 syncId 给 background，background 会用这个 ID
       const response = await chrome.runtime.sendMessage({
         type: 'SYNC_ARTICLE',
-        payload: { storageKey, syncId },
+        payload: { article, platforms: selectedPlatforms, syncId },
       })
 
       const allResults: SyncResult[] = response.results || []
@@ -488,15 +477,10 @@ export const useSyncStore = create<SyncState>((set, get) => ({
     set({ status: 'syncing', results: successResults, error: null, imageProgress: null, platformProgress: new Map(), currentSyncId: syncId })
 
     try {
-      // 大数据通过 storage 中转，避免 runtime.sendMessage 的 64MiB 限制
-      const storageKey = await storeLargePayload(syncId, {
-        article, platforms: failedPlatformIds, skipHistory: true, syncId,
-      })
-
       // SYNC_ARTICLE 现在同时处理 DSL 和 CMS 平台
       const response = await chrome.runtime.sendMessage({
         type: 'SYNC_ARTICLE',
-        payload: { storageKey, syncId },
+        payload: { article, platforms: failedPlatformIds, skipHistory: true, syncId },
       })
 
       const retryResults: SyncResult[] = response.results || []
@@ -549,9 +533,19 @@ export const useSyncStore = create<SyncState>((set, get) => ({
   },
 
   updateProgress: (result: SyncResult) => {
-    set(state => ({
-      results: [...state.results, result],
-    }))
+    set(state => {
+      const newResults = [...state.results, result]
+      // Auto-transition to completed when all platforms are done.
+      // This handles the case where popup was closed during sync and
+      // reopened — the startSync response handler won't fire, so we
+      // detect completion here from individual SYNC_PROGRESS messages.
+      const isComplete = state.status === 'syncing' &&
+        newResults.length >= state.selectedPlatforms.length
+      return {
+        results: newResults,
+        ...(isComplete ? { status: 'completed' as const, imageProgress: null } : {}),
+      }
+    })
   },
 
   updateImageProgress: (progress: ImageProgress | null) => {
