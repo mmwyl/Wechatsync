@@ -1308,13 +1308,13 @@ chrome.runtime.onInstalled.addListener(async details => {
     }
   }
 
-  // 首次安装时打开欢迎页
-  if (details.reason === 'install') {
-    chrome.tabs.create({
-      url: 'https://www.wechatsync.com/?utm_source=extension&utm_medium=install',
-      active: true,
-    })
-  }
+  // 首次安装时打开欢迎页（已禁用）
+  // if (details.reason === 'install') {
+  //   chrome.tabs.create({
+  //     url: 'https://www.wechatsync.com/?utm_source=extension&utm_medium=install',
+  //     active: true,
+  //   })
+  // }
 })
 
 /**
