@@ -4,7 +4,10 @@ import { cn } from '@/lib/utils'
 import { SyncDialog } from '@/components/sync-dialog'
 import type { Platform, SyncResult, PlatformProgress } from '@/components/sync-dialog/types'
 import { createLogger } from '../lib/logger'
-
+import { parseDocument, FILE_ACCEPT, type ParsedDocument } from '../lib/document-importer'
+import { htmlToMarkdownNative } from '@wechatsync/core'
+import { preprocessForPlatform, preprocessContentDOM, type PreprocessResult } from '../lib/content-processor'
+import { storeLargePayload } from '../lib/large-message'
 const logger = createLogger('Editor')
 
 interface Article {
@@ -35,6 +38,8 @@ export function EditorApp() {
   const [rateLimitWarning, setRateLimitWarning] = useState<string | null>(null)
   const [platformProgress, setPlatformProgress] = useState<Map<string, PlatformProgress>>(new Map())
   const [currentSyncId, setCurrentSyncId] = useState<string | null>(null)
+  const [isImporting, setIsImporting] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const currentSyncIdRef = useRef<string | null>(null)
   const [showSyncDialog, setShowSyncDialog] = useState(false)
 
@@ -203,12 +208,55 @@ export function EditorApp() {
     setResults(prev => prev.filter(r => r.success))
     setPlatformProgress(new Map())
 
-    window.parent.postMessage(JSON.stringify({
-      type: 'START_SYNC',
-      article: editedArticle,
-      platforms: failedPlatforms,
-      syncId,
-    }), '*')
+    try {
+      const configResponse = await chrome.runtime.sendMessage({
+        type: 'GET_PREPROCESS_CONFIGS',
+        platforms: failedPlatforms,
+      })
+      const configs = configResponse?.configs || {}
+
+      const platformContents: Record<string, PreprocessResult> = {}
+      for (const platformId of failedPlatforms) {
+        const config = configs[platformId]
+        if (config) {
+          platformContents[platformId] = preprocessForPlatform(rawHtml, config)
+        } else {
+          const tempDiv = document.createElement('div')
+          tempDiv.innerHTML = rawHtml
+          preprocessContentDOM(tempDiv)
+          const html = tempDiv.innerHTML
+          platformContents[platformId] = {
+            html,
+            markdown: htmlToMarkdownNative(html),
+          }
+        }
+      }
+
+      const editedArticle = {
+        ...article!,
+        title: titleRef.current?.innerText || article!.title,
+        content: rawHtml,
+        html: rawHtml,
+        markdown: htmlToMarkdownNative(rawHtml),
+        platformContents,
+      }
+
+      // 大数据通过 storage 中转，避免 runtime.sendMessage 的 64MiB 限制
+      const storageKey = await storeLargePayload(syncId, {
+        article: editedArticle,
+        platforms: failedPlatforms,
+        syncId,
+      })
+
+      await chrome.runtime.sendMessage({
+        type: 'SYNC_ARTICLE_FROM_EDITOR',
+        payload: { storageKey, syncId },
+      })
+    } catch (error) {
+      console.error('Retry sync error:', error)
+      setError('重试失败: ' + (error instanceof Error ? error.message : '未知错误'))
+      setStatus('idle')
+    }
   }
 
   const handleReset = () => {
@@ -247,6 +295,15 @@ export function EditorApp() {
               </span>
             )}
           </div>
+
+          {/* 隐藏的文件输入 */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept={FILE_ACCEPT}
+            onChange={handleFileImport}
+            className="hidden"
+          />
 
           <div className="flex items-center gap-2">
             <button

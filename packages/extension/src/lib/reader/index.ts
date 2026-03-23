@@ -488,12 +488,20 @@ function extractWithDefuddle(): ReaderResult | null {
  * 需要在已做好代码块/KaTeX 预处理的页面上调用
  */
 function extractWithReadability(): ReaderResult | null {
+  // 临时替换页面中的代码块和 KaTeX 为纯文本
+  const codeBlockBackup = backupAndReplaceCodeBlocks()
+  const katexBackup = backupAndReplaceKatex()
+
   try {
     // Readability 需要克隆的 document（此时代码块已是纯文本）
     const docClone = document.cloneNode(true) as Document
     docClone.querySelectorAll('[data-wechatsync-ui]').forEach(el => el.remove())
     const reader = new Readability(docClone)
     const article = reader.parse()
+
+    // 恢复原始页面
+    restoreKatex(katexBackup)
+    restoreCodeBlocks(codeBlockBackup)
 
     if (!article) {
       return null
@@ -522,6 +530,9 @@ function extractWithReadability(): ReaderResult | null {
       extractor: 'readability',
     }
   } catch (e) {
+    // 确保异常时也恢复页面
+    restoreKatex(katexBackup)
+    restoreCodeBlocks(codeBlockBackup)
     logger.error('Readability error:', e)
     return null
   }

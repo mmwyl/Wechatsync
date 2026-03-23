@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Settings, Plus, Clock, X, Download, Info } from 'lucide-react'
 import { useSyncStore } from '../stores/sync'
@@ -34,6 +34,7 @@ export function HomeNew() {
     retryFailed,
     reset,
     checkRateLimit,
+    setArticle,
   } = useSyncStore()
 
   const [settingsOpen, setSettingsOpen] = useState(false)

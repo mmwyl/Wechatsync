@@ -204,9 +204,15 @@ export class ZhihuAdapter extends CodeAdapter {
     )
 
     // 3. 代码块格式
+    // 匹配带语言的: <pre><code class="language-js"> 或类似变体
     result = result.replace(
-      /<pre><code class="language-(\w+)">/gi,
+      /<pre[^>]*>\s*<code[^>]*class=["']?[^"']*language-(\w+)[^"']*["']?[^>]*>/gi,
       '<pre lang="$1"><code>'
+    )
+    // 匹配不带语言的，确保没有漏掉的 code。这里排除已经加上 lang 属性的 pre 以免覆盖前一步
+    result = result.replace(
+      /<pre(?![^>]*lang=)[^>]*>\s*<code[^>]*>/gi,
+      '<pre lang="text"><code>'
     )
 
     // 4. 移除微信样式属性 (但保留知乎的 data-draft-* 属性)

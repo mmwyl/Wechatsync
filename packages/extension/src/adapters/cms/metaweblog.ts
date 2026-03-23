@@ -607,6 +607,65 @@ export async function uploadTypechoImage(
 }
 
 /**
+ * Typecho 专用上传图片
+ */
+export async function uploadTypechoImage(
+  credentials: MetaWeblogCredentials,
+  imageData: Uint8Array,
+  filename: string,
+  mimeType: string
+): Promise<{ success: boolean; url?: string; error?: string }> {
+  const endpoint = credentials.url.replace(/\/$/, '') + '/action/xmlrpc'
+
+  try {
+    // 同时发送 bits 和 bytes，提高兼容性
+    const mediaObject = {
+      name: filename,
+      type: mimeType,
+      bits: imageData,
+      bytes: imageData,
+    }
+
+    const body = buildXmlRpcRequest('metaWeblog.newMediaObject', [
+      0, // blogId
+      credentials.username,
+      credentials.password,
+      mediaObject,
+    ])
+
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'text/xml',
+      },
+      body,
+    })
+
+    if (!response.ok) {
+      return { success: false, error: `HTTP ${response.status}` }
+    }
+
+    const xml = await response.text()
+
+    // 解析上传结果，提取 URL
+    const urlMatch = xml.match(/<name>url<\/name>\s*<value>(?:<string>)?([^<]+)(?:<\/string>)?<\/value>/)
+    if (urlMatch) {
+      return { success: true, url: urlMatch[1] }
+    }
+
+    // 检查错误
+    if (xml.includes('<fault>')) {
+      const faultMatch = xml.match(/<string>([^<]+)<\/string>/)
+      return { success: false, error: faultMatch?.[1] || 'Upload failed' }
+    }
+
+    return { success: false, error: '无法解析上传结果' }
+  } catch (error) {
+    return { success: false, error: (error as Error).message }
+  }
+}
+
+/**
  * Typecho 专用测试连接
  */
 export async function testTypechoConnection(credentials: MetaWeblogCredentials): Promise<{ success: boolean; error?: string }> {

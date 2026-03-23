@@ -5,7 +5,8 @@
  * - 第一个实例启动 WebSocket 服务器 + HTTP API
  * - 后续实例通过 HTTP API 转发请求
  */
-import { WebSocketServer, WebSocket } from 'ws'
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import wsModule from 'ws'
 import http from 'http'
 import type { RequestMessage, ResponseMessage } from './types.js'
 
@@ -291,6 +292,30 @@ export class ExtensionBridge {
         poll()
       })
     }
+  }
+
+  /**
+   * 等待 Extension 连接
+   */
+  waitForConnection(timeoutMs: number = 60000): Promise<void> {
+    if (this.isConnected()) {
+      return Promise.resolve()
+    }
+
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        const index = this.connectionResolvers.indexOf(resolve)
+        if (index > -1) {
+          this.connectionResolvers.splice(index, 1)
+        }
+        reject(new Error('timeout'))
+      }, timeoutMs)
+
+      this.connectionResolvers.push(() => {
+        clearTimeout(timeout)
+        resolve()
+      })
+    })
   }
 
   /**

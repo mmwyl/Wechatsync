@@ -125,7 +125,7 @@ type MessageAction =
   | { type: 'GET_PLATFORMS' }
   | { type: 'CHECK_ALL_AUTH'; payload?: { forceRefresh?: boolean } }
   | { type: 'CHECK_AUTH'; payload: { platformId: string } }
-  | { type: 'SYNC_ARTICLE'; payload: { article: any; platforms: string[]; allSelectedPlatforms?: string[]; skipHistory?: boolean; source?: string; syncId?: string } }
+  | { type: 'SYNC_ARTICLE'; payload: { storageKey: string; syncId?: string } }
   | { type: 'OPEN_SYNC_PAGE'; path?: string }
   | { type: 'TEST_CMS_CONNECTION'; payload: { type: CMSType; url: string; username: string; password: string } }
   | { type: 'SYNC_TO_CMS'; payload: { accountId: string; article: any } }
@@ -205,7 +205,17 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
     }
 
     case 'SYNC_ARTICLE': {
-      const { article, platforms, allSelectedPlatforms, skipHistory, source = 'popup', syncId: passedSyncId } = message.payload
+      // 从 storage 中读取大型 payload，避免消息体超过 64MiB 限制
+      const { storageKey, syncId: passedSyncId } = message.payload
+      const payload = await retrieveLargePayload<{
+        article: any
+        platforms: string[]
+        allSelectedPlatforms?: string[]
+        skipHistory?: boolean
+        source?: string
+        syncId?: string
+      }>(storageKey)
+      const { article, platforms, allSelectedPlatforms, skipHistory, source = 'popup' } = payload
       const allPlatformMetas = getAllPlatformMetas()
 
       // 使用传入的 syncId 或生成新的
@@ -218,10 +228,10 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
       const sendProgress = (msg: Record<string, unknown>) => {
         const msgWithSyncId = { ...msg, syncId }
         // 发送到 popup 等扩展页面
-        chrome.runtime.sendMessage(msgWithSyncId).catch(() => {})
+        chrome.runtime.sendMessage(msgWithSyncId).catch(() => { })
         // 如果请求来自 content script，也发送到该 tab
         if (senderTabId) {
-          chrome.tabs.sendMessage(senderTabId, msgWithSyncId).catch(() => {})
+          chrome.tabs.sendMessage(senderTabId, msgWithSyncId).catch(() => { })
         }
       }
 
@@ -306,7 +316,7 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
             }
             syncState.results.push(resultWithName)
             allResults.push(resultWithName)
-            saveSyncState(syncState).catch(() => {})
+            saveSyncState(syncState).catch(() => { })
 
             // 发送同步进度通知
             sendProgress({
@@ -354,7 +364,7 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
             }
             allResults.push(cmsResult)
             syncState.results.push(cmsResult)
-            saveSyncState(syncState).catch(() => {})
+            saveSyncState(syncState).catch(() => { })
             sendProgress({ type: 'SYNC_PROGRESS', payload: { result: cmsResult } })
             sendProgress({
               type: 'SYNC_DETAIL_PROGRESS',
@@ -395,7 +405,7 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
           }
           allResults.push(cmsResult)
           syncState.results.push(cmsResult)
-          saveSyncState(syncState).catch(() => {})
+          saveSyncState(syncState).catch(() => { })
           sendProgress({ type: 'SYNC_PROGRESS', payload: { result: cmsResult } })
           sendProgress({
             type: 'SYNC_DETAIL_PROGRESS',
@@ -416,7 +426,7 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
           }
           allResults.push(cmsResult)
           syncState.results.push(cmsResult)
-          saveSyncState(syncState).catch(() => {})
+          saveSyncState(syncState).catch(() => { })
           sendProgress({ type: 'SYNC_PROGRESS', payload: { result: cmsResult } })
           sendProgress({
             type: 'SYNC_DETAIL_PROGRESS',
@@ -501,10 +511,10 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
             return { success: false, error: '不支持的 CMS 类型' }
         }
         // 追踪 CMS 测试连接
-        trackCmsManagement('test', type, result.success).catch(() => {})
+        trackCmsManagement('test', type, result.success).catch(() => { })
         return result
       } catch (error) {
-        trackCmsManagement('test', type, false).catch(() => {})
+        trackCmsManagement('test', type, false).catch(() => { })
         return { success: false, error: (error as Error).message }
       }
     }
@@ -549,16 +559,16 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
         }
 
         // 追踪 CMS 同步结果（含错误类型）
-        trackCmsSync('popup', account.type, result.success).catch(() => {})
+        trackCmsSync('popup', account.type, result.success).catch(() => { })
         if (result.success) {
           // 追踪 CMS 用户里程碑
-          trackMilestone('cms_user').catch(() => {})
+          trackMilestone('cms_user').catch(() => { })
         } else if (result.error) {
           // 额外追踪错误类型用于问题分析
           trackFeatureUse('cms_sync_error', {
             cms_type: account.type,
             error_type: inferErrorType(result.error),
-          }).catch(() => {})
+          }).catch(() => { })
         }
 
         // 更新同步状态（用于 popup 恢复）
@@ -621,9 +631,9 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
       }
       startMcpClient()
       logger.info(' MCP enabled')
-      trackMcpUsage('enable').catch(() => {})
+      trackMcpUsage('enable').catch(() => { })
       // 追踪 MCP 用户里程碑
-      trackMilestone('mcp_user').catch(() => {})
+      trackMilestone('mcp_user').catch(() => { })
       return { success: true, token }
     }
 
@@ -633,7 +643,7 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
       mcpClient.clearToken()
       stopMcpClient()
       logger.info(' MCP disabled')
-      trackMcpUsage('disable').catch(() => {})
+      trackMcpUsage('disable').catch(() => { })
       return { success: true }
     }
 
@@ -674,7 +684,7 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
 
     case 'TRACK_ARTICLE_EXTRACT': {
       const { source, success, hasTitle, hasContent, hasCover, contentLength } = message.payload
-      trackArticleExtract(source, success, { hasTitle, hasContent, hasCover, contentLength }).catch(() => {})
+      trackArticleExtract(source, success, { hasTitle, hasContent, hasCover, contentLength }).catch(() => { })
       return { success: true }
     }
 
@@ -719,7 +729,7 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
 
       // 辅助函数：发送消息到 tab（带 syncId）
       const sendToTab = (msg: Record<string, unknown>) => {
-        chrome.tabs.sendMessage(tabId, { ...msg, syncId }).catch(() => {})
+        chrome.tabs.sendMessage(tabId, { ...msg, syncId }).catch(() => { })
       }
 
       // 检查频率限制（不阻止，只返回警告）
@@ -768,7 +778,7 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
             }
             syncState.results.push(resultWithName)
             allResults.push(resultWithName)
-            saveSyncState(syncState).catch(() => {})
+            saveSyncState(syncState).catch(() => { })
 
             // 发送进度到 content script (编辑器)
             sendToTab({
@@ -816,7 +826,7 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
             }
             allResults.push(cmsResult)
             syncState.results.push(cmsResult)
-            saveSyncState(syncState).catch(() => {})
+            saveSyncState(syncState).catch(() => { })
             sendToTab({ type: 'SYNC_PROGRESS', result: cmsResult })
             sendToTab({
               type: 'SYNC_DETAIL_PROGRESS',
@@ -857,7 +867,7 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
           }
           allResults.push(cmsResult)
           syncState.results.push(cmsResult)
-          saveSyncState(syncState).catch(() => {})
+          saveSyncState(syncState).catch(() => { })
           sendToTab({ type: 'SYNC_PROGRESS', result: cmsResult })
           sendToTab({
             type: 'SYNC_DETAIL_PROGRESS',
@@ -876,7 +886,7 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
           }
           allResults.push(cmsResult)
           syncState.results.push(cmsResult)
-          saveSyncState(syncState).catch(() => {})
+          saveSyncState(syncState).catch(() => { })
           sendToTab({ type: 'SYNC_PROGRESS', result: cmsResult })
           sendToTab({
             type: 'SYNC_DETAIL_PROGRESS',
@@ -1123,15 +1133,18 @@ chrome.runtime.onInstalled.addListener(async details => {
   // 预加载适配器
   await initAdapters()
 
+  // 清理可能残留的大数据中转缓存
+  cleanupStalePayloads().catch(() => {})
+
   // 追踪安装/更新
-  trackInstall(details.reason, details.previousVersion).catch(() => {})
+  trackInstall(details.reason, details.previousVersion).catch(() => { })
 
   // 拉取远程配置
   fetchRemoteConfig().catch(() => {})
 
   // 记录安装时间（用于首次同步追踪）
   if (details.reason === 'install') {
-    recordInstallTimestamp().catch(() => {})
+    recordInstallTimestamp().catch(() => { })
   }
 
   // 升级时打开 changelog 页面
@@ -1152,13 +1165,13 @@ chrome.runtime.onInstalled.addListener(async details => {
     }
   }
 
-  // 首次安装时打开欢迎页
-  if (details.reason === 'install') {
-    chrome.tabs.create({
-      url: 'https://www.wechatsync.com/?utm_source=extension&utm_medium=install',
-      active: true,
-    })
-  }
+  // 首次安装时打开欢迎页（已禁用）
+  // if (details.reason === 'install') {
+  //   chrome.tabs.create({
+  //     url: 'https://www.wechatsync.com/?utm_source=extension&utm_medium=install',
+  //     active: true,
+  //   })
+  // }
 })
 
 /**
@@ -1217,7 +1230,7 @@ chrome.alarms.create('daily_growth_metrics', { periodInMinutes: 24 * 60 })
 chrome.alarms.create('remote_config_fetch', { periodInMinutes: 6 * 60 })
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'daily_growth_metrics') {
-    trackGrowthMetrics().catch(() => {})
+    trackGrowthMetrics().catch(() => { })
   }
   if (alarm.name === 'remote_config_fetch') {
     fetchRemoteConfig().catch(() => {})
@@ -1225,7 +1238,43 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 })
 
 // 首次启动时也追踪一次增长指标
-trackGrowthMetrics().catch(() => {})
+trackGrowthMetrics().catch(() => { })
+
+// 检查版本更新（用于 ZIP 安装用户）
+// 如有新版本，在扩展图标上显示 badge 提醒
+checkForUpdates().then(async (result) => {
+  if (result.hasUpdate && result.info) {
+    // 检查用户是否已忽略此版本
+    const isDismissed = await isUpdateDismissed(result.info.version)
+    if (!isDismissed) {
+      // 显示更新 badge
+      await chrome.action.setBadgeText({ text: 'NEW' })
+      await chrome.action.setBadgeBackgroundColor({ color: BADGE_COLORS.update })
+      logger.info('Update badge shown for version:', result.info.version)
+    }
+  }
+}).catch(() => { })
+
+/**
+ * 清理遗留的动态规则（防止扩展崩溃后规则残留影响其他网站）
+ */
+async function clearOrphanedRules() {
+  try {
+    const rules = await chrome.declarativeNetRequest.getDynamicRules()
+    if (rules.length > 0) {
+      logger.info(`Clearing ${rules.length} orphaned dynamic rules...`)
+      await chrome.declarativeNetRequest.updateDynamicRules({
+        removeRuleIds: rules.map(r => r.id),
+      })
+      logger.info('Orphaned rules cleared')
+    }
+  } catch (error) {
+    logger.error('Failed to clear orphaned rules:', error)
+  }
+}
+
+// 启动时清理遗留规则
+clearOrphanedRules()
 
 // 首次启动时拉取远程配置（带缓存检查）
 fetchConfigIfNeeded().catch(() => {})
