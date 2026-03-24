@@ -304,17 +304,12 @@ export abstract class CodeAdapter implements PlatformAdapter {
         result = result.replace(full, replacement)
 
         logger.debug(`Image uploaded: ${uploadResult.url}`)
-      } catch (error) {
-        logger.error(`Failed to upload image: ${src}`, error)
-        // 继续处理其他图片
-      }
 
         // 避免请求过快
         await this.delay(300)
       } catch (error) {
         logger.error(`Failed to upload image: ${src}`, error)
         // 图片上传失败时，保留原始 URL 而不是删除图片
-        // 这样可以确保文章内容不会因为图片上传失败而丢失
         logger.warn(`Keeping original image URL due to upload failure: ${src}`)
       }
     }

@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Settings, Plus, Clock, X, Download, Info } from 'lucide-react'
+import { Settings, Plus, Clock, X, Download, FileUp, Loader2 } from 'lucide-react'
 import { useSyncStore } from '../stores/sync'
 import { SettingsDrawer } from '../components/SettingsDrawer'
 import { SyncDialog } from '@/components/sync-dialog'
@@ -9,6 +9,7 @@ import { cn } from '@/lib/utils'
 import { trackPageView, trackFeatureDiscovery } from '../../lib/analytics'
 import { createLogger } from '../../lib/logger'
 import { getCachedUpdateInfo, dismissUpdate, type UpdateCheckResult } from '../../lib/version-check'
+import { parseDocument, FILE_ACCEPT } from '../../lib/document-importer'
 
 const logger = createLogger('HomeNew')
 
@@ -44,7 +45,8 @@ export function HomeNew() {
   const [updateInfo, setUpdateInfo] = useState<UpdateCheckResult | null>(null)
   const [floatingEnabled, setFloatingEnabled] = useState(false)
   const [isFirstSync, setIsFirstSync] = useState(false)
-  const [showShareTip, setShowShareTip] = useState(false)
+  const [isImporting, setIsImporting] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   // Load data
   useEffect(() => {
@@ -63,12 +65,9 @@ export function HomeNew() {
       } catch {}
       loadAllPlatforms()
       loadArticle()
-      chrome.storage.local.get(['floatingButtonEnabled', 'syncHistory', 'dismissedShareTip'], (r) => {
+      chrome.storage.local.get(['floatingButtonEnabled', 'syncHistory'], (r) => {
         setFloatingEnabled(r.floatingButtonEnabled ?? false)
         setIsFirstSync(!r.syncHistory || r.syncHistory.length === 0)
-        if (!r.dismissedShareTip) {
-          setShowShareTip(true)
-        }
       })
       const cached = await getCachedUpdateInfo()
       if (cached?.hasUpdate && cached.info) {
@@ -107,6 +106,60 @@ export function HomeNew() {
     }
   }
 
+  // 处理文件导入
+  const handleFileImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    setIsImporting(true)
+    try {
+      const parsed = await parseDocument(file)
+
+      const importedArticle = {
+        title: parsed.title,
+        content: parsed.content,
+        html: parsed.content,
+        markdown: parsed.markdown || parsed.content,
+        summary: parsed.content.replace(/<[^>]+>/g, '').slice(0, 100),
+      }
+
+      // 并行执行：保存文章到 storage 和获取平台列表
+      const [storageResponse] = await Promise.all([
+        chrome.runtime.sendMessage({ type: 'CHECK_ALL_AUTH', payload: { forceRefresh: false } }),
+        chrome.storage.local.set({ pendingArticle: importedArticle }),
+      ])
+
+      const platforms = storageResponse?.platforms || []
+
+      // 保存平台信息到 storage
+      await chrome.storage.local.set({ editorPlatforms: platforms })
+
+      logger.info('Document imported, opening editor in new tab')
+
+      // 打开新标签页显示编辑器
+      const editorUrl = chrome.runtime.getURL('src/editor/index.html')
+      await chrome.tabs.create({ url: editorUrl })
+
+      // 关闭 popup
+      window.close()
+    } catch (error) {
+      logger.error('Failed to import document:', error)
+      setRateLimitWarning(`导入失败: ${error instanceof Error ? error.message : '未知错误'}`)
+      setTimeout(() => setRateLimitWarning(null), 5000)
+    } finally {
+      setIsImporting(false)
+      // 清空 input 以便再次选择相同文件
+      if (fileInputRef.current) {
+        fileInputRef.current.value = ''
+      }
+    }
+  }
+
+  // 打开文件选择器
+  const handleImportClick = () => {
+    fileInputRef.current?.click()
+  }
+
   // Start sync with rate-limit check
   const handleStartSync = async () => {
     const warning = await checkRateLimit()
@@ -142,13 +195,7 @@ export function HomeNew() {
             <Clock className="w-3.5 h-3.5" />
             <span className="text-[10px] text-muted-foreground leading-none">历史</span>
           </button>
-          <button
-            onClick={() => navigate('/about')}
-            className="flex flex-col items-center gap-0.5 px-2 py-1 rounded-lg hover:bg-muted transition-colors"
-          >
-            <Info className="w-3.5 h-3.5" />
-            <span className="text-[10px] text-muted-foreground leading-none">关于</span>
-          </button>
+
           <button
             onClick={() => {
               setSettingsOpen(true)
@@ -161,6 +208,15 @@ export function HomeNew() {
           </button>
         </nav>
       </header>
+
+      {/* 隐藏的文件输入 */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept={FILE_ACCEPT}
+        onChange={handleFileImport}
+        className="hidden"
+      />
 
       {/* Version update banner */}
       {updateInfo?.hasUpdate && updateInfo.info && (
@@ -203,47 +259,28 @@ export function HomeNew() {
       )}
 
       {/* Share / welcome banner (first time only) */}
-      {showShareTip && (
-        <div className="px-4 pt-3">
-          <div className="bg-muted/50 rounded-lg p-3 text-sm relative">
-            <button
-              onClick={() => {
-                setShowShareTip(false)
-                chrome.storage.local.set({ dismissedShareTip: true })
-              }}
-              className="absolute top-2 right-2 text-muted-foreground hover:text-foreground"
-            >
-              <X className="w-4 h-4" />
-            </button>
-            <p className="font-medium mb-1.5">谢谢支持！</p>
-            <p className="text-xs text-muted-foreground leading-relaxed">
-              如果觉得本工具不错，还请分享给你的朋友！
-              <br />
-              如果你是开发者，欢迎参与进来{' '}
-              <a
-                href="https://github.com/wechatsync/Wechatsync"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-primary hover:underline"
-              >
-                GitHub
-              </a>
-            </p>
-            <hr className="my-2 border-border" />
-            <p className="text-xs text-muted-foreground text-right">
-              by{' '}
-              <a
-                href="https://fun0.netlify.app/about/?utm_source=wechatsync"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-primary hover:underline"
-              >
-                fun
-              </a>
-            </p>
-          </div>
-        </div>
-      )}
+
+
+      {/* 导入文档按钮 */}
+      <div className="px-4 pt-3">
+        <button
+          onClick={handleImportClick}
+          disabled={isImporting || status === 'syncing'}
+          className={cn(
+            'w-full py-2 px-3 rounded-lg border border-dashed border-gray-300 dark:border-gray-600',
+            'flex items-center justify-center gap-2 text-sm text-gray-600 dark:text-gray-400',
+            'hover:bg-gray-50 dark:hover:bg-gray-800 hover:border-gray-400 transition-colors',
+            (isImporting || status === 'syncing') && 'opacity-50 cursor-not-allowed'
+          )}
+        >
+          {isImporting ? (
+            <Loader2 className="w-4 h-4 animate-spin" />
+          ) : (
+            <FileUp className="w-4 h-4" />
+          )}
+          导入文档 (Word/Markdown)
+        </button>
+      </div>
 
       {/* SyncDialog — the unified sync flow */}
       <SyncDialog

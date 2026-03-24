@@ -9,6 +9,7 @@ import {
   trackImplicitFeedback,
 } from '../../lib/analytics'
 import { checkSyncFrequency } from '../../lib/rate-limit'
+import { storeLargePayload } from '../../lib/large-message'
 import { createLogger } from '../../lib/logger'
 
 const logger = createLogger('SyncStore')

@@ -1,12 +1,12 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { X, Loader2 } from 'lucide-react'
+import { X, Loader2, FileUp, Bold, Italic, Underline, List, ListOrdered, AlignLeft, AlignCenter, AlignRight, Quote, Code, Check } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { SyncDialog } from '@/components/sync-dialog'
 import type { Platform, SyncResult, PlatformProgress } from '@/components/sync-dialog/types'
 import { createLogger } from '../lib/logger'
 import { parseDocument, FILE_ACCEPT, type ParsedDocument } from '../lib/document-importer'
 import { htmlToMarkdownNative } from '@wechatsync/core'
-import { preprocessForPlatform, preprocessContentDOM, type PreprocessResult } from '../lib/content-processor'
+import { preprocessForPlatform, type PreprocessResult } from '../lib/content-processor'
 import { storeLargePayload } from '../lib/large-message'
 const logger = createLogger('Editor')
 
@@ -49,6 +49,114 @@ export function EditorApp() {
 
   const titleRef = useRef<HTMLHeadingElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
+
+  // 富文本工具栏命令
+  const execCommand = (command: string, value?: string) => {
+    document.execCommand(command, false, value)
+    contentRef.current?.focus()
+  }
+
+  const handleBold = () => execCommand('bold')
+  const handleItalic = () => execCommand('italic')
+  const handleUnderline = () => execCommand('underline')
+  const handleBulletList = () => execCommand('insertUnorderedList')
+  const handleNumberedList = () => execCommand('insertOrderedList')
+  const handleAlignLeft = () => execCommand('justifyLeft')
+  const handleAlignCenter = () => execCommand('justifyCenter')
+  const handleAlignRight = () => execCommand('justifyRight')
+  const handleQuote = () => execCommand('formatBlock', 'blockquote')
+  const handleCode = () => execCommand('formatBlock', 'pre')
+  const handleHeading1 = () => execCommand('formatBlock', 'h1')
+  const handleHeading2 = () => execCommand('formatBlock', 'h2')
+  const handleHeading3 = () => execCommand('formatBlock', 'h3')
+
+  // 从 storage 加载文章数据（从 popup 导入文档打开新标签页时使用）
+  useEffect(() => {
+    const loadFromStorage = async () => {
+      try {
+        const storage = await chrome.storage.local.get(['pendingArticle', 'editorPlatforms'])
+
+        if (storage.pendingArticle) {
+          logger.info('Loading article from storage:', storage.pendingArticle.title)
+          setArticle(storage.pendingArticle)
+
+          // 设置初始内容到编辑器
+          if (contentRef.current && storage.pendingArticle.content) {
+            contentRef.current.innerHTML = storage.pendingArticle.content
+          }
+
+          // 清除 storage，避免下次重复加载
+          await chrome.storage.local.remove(['pendingArticle'])
+        }
+
+        if (storage.editorPlatforms) {
+          logger.info('Loading platforms from storage:', storage.editorPlatforms.length)
+          setPlatforms(storage.editorPlatforms.map((p: any) => ({
+            id: p.id,
+            name: p.name,
+            icon: p.icon,
+            isAuthenticated: p.isAuthenticated,
+            username: p.username,
+          })))
+
+          // 从 storage 恢复已选中的平台
+          const storedSelection = await chrome.storage.local.get(SELECTED_PLATFORMS_KEY)
+          const storedPlatforms = storedSelection[SELECTED_PLATFORMS_KEY] as string[] | undefined
+          const authenticated = storage.editorPlatforms.filter((p: any) => p.isAuthenticated)
+          const authenticatedIds = authenticated.map((p: any) => p.id)
+
+          if (storedPlatforms && storedPlatforms.length > 0) {
+            const authenticatedSet = new Set(authenticatedIds)
+            const selected = storedPlatforms.filter(id => authenticatedSet.has(id))
+            setSelectedPlatforms(selected.length > 0 ? selected : authenticatedIds)
+          } else {
+            setSelectedPlatforms(authenticatedIds)
+          }
+
+          await chrome.storage.local.remove(['editorPlatforms'])
+        }
+      } catch (error) {
+        logger.error('Failed to load from storage:', error)
+      }
+    }
+
+    loadFromStorage()
+  }, [])
+
+  // 监听来自 background 的消息（新标签页模式下同步进度通信）
+  useEffect(() => {
+    const handleRuntimeMessage = (message: any) => {
+      logger.debug('Received runtime message:', message)
+
+      if (message.type === 'SYNC_PROGRESS') {
+        if (message.result) {
+          setResults(prev => [...prev, message.result])
+        }
+      } else if (message.type === 'SYNC_COMPLETE') {
+        setStatus('completed')
+        if (message.results) {
+          setResults(message.results)
+        }
+      } else if (message.type === 'SYNC_ERROR') {
+        setError(message.error || '同步失败')
+        setStatus('idle')
+      } else if (message.type === 'IMAGE_PROGRESS') {
+        setPlatformProgress(prev => {
+          const next = new Map(prev)
+          next.set(message.platform, {
+            platform: message.platform,
+            platformName: message.platform,
+            stage: 'uploading_images',
+            imageProgress: { current: message.current, total: message.total },
+          })
+          return next
+        })
+      }
+    }
+
+    chrome.runtime.onMessage.addListener(handleRuntimeMessage)
+    return () => chrome.runtime.onMessage.removeListener(handleRuntimeMessage)
+  }, [])
 
   // Receive messages from parent window
   useEffect(() => {
@@ -138,9 +246,57 @@ export function EditorApp() {
     }
   }, [results.length, selectedPlatforms.length, status])
 
+  // 判断是否在 iframe 中运行（iframe 模式 vs 独立标签页模式）
+  const isInIframe = window.parent !== window
+
   const handleClose = useCallback(() => {
-    window.parent.postMessage(JSON.stringify({ type: 'CLOSE_EDITOR' }), '*')
-  }, [])
+    if (isInIframe) {
+      window.parent.postMessage(JSON.stringify({ type: 'CLOSE_EDITOR' }), '*')
+    } else {
+      // 独立标签页模式：直接关闭标签页
+      window.close()
+    }
+  }, [isInIframe])
+
+  // 打开文件选择器
+  const handleImportClick = () => {
+    fileInputRef.current?.click()
+  }
+
+  // 处理文件导入
+  const handleFileImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    setIsImporting(true)
+    try {
+      const parsed = await parseDocument(file) as ParsedDocument
+      setArticle(prev => prev ? {
+        ...prev,
+        title: parsed.title || prev.title,
+        content: parsed.content || prev.content,
+      } : null)
+
+      // 更新编辑器内容
+      if (contentRef.current) {
+        contentRef.current.innerHTML = parsed.content || ''
+      }
+      if (titleRef.current) {
+        titleRef.current.innerText = parsed.title || ''
+      }
+
+      logger.info('Document imported:', file.name)
+    } catch (error) {
+      logger.error('Failed to import document:', error)
+      setError(`导入失败: ${error instanceof Error ? error.message : '未知错误'}`)
+    } finally {
+      setIsImporting(false)
+      // 清空 input 以便再次选择相同文件
+      if (fileInputRef.current) {
+        fileInputRef.current.value = ''
+      }
+    }
+  }
 
   // Get edited article content
   const getEditedArticle = useCallback(() => {
@@ -176,7 +332,8 @@ export function EditorApp() {
     saveSelectedPlatforms([])
   }
 
-  const handleStartSync = () => {
+
+  const handleStartSync = async () => {
     const editedArticle = getEditedArticle()
     if (!editedArticle || selectedPlatforms.length === 0) return
 
@@ -187,15 +344,69 @@ export function EditorApp() {
     setError(null)
     setPlatformProgress(new Map())
 
-    window.parent.postMessage(JSON.stringify({
-      type: 'START_SYNC',
-      article: editedArticle,
-      platforms: selectedPlatforms,
-      syncId,
-    }), '*')
+    if (isInIframe) {
+      // iframe 模式：通过 postMessage 与 content script 通信
+      window.parent.postMessage(JSON.stringify({
+        type: 'START_SYNC',
+        article: editedArticle,
+        platforms: selectedPlatforms,
+        syncId,
+      }), '*')
+    } else {
+      // 独立标签页模式：直接通过 runtime.sendMessage 与 background 通信
+      try {
+        const rawHtml = editedArticle.content || ''
+        const platformsArr = [...selectedPlatforms]
+
+        // 获取各平台预处理配置
+        const configResponse = await chrome.runtime.sendMessage({
+          type: 'GET_PREPROCESS_CONFIGS',
+          platforms: platformsArr,
+        })
+        const configs = configResponse?.configs || {}
+
+        // 为各平台做本地预处理
+        const platformContents: Record<string, PreprocessResult> = {}
+        for (const platformId of platformsArr) {
+          const config = configs[platformId]
+          if (config) {
+            platformContents[platformId] = preprocessForPlatform(rawHtml, config)
+          } else {
+            // 无预处理配置，直接使用原始 HTML
+            platformContents[platformId] = {
+              html: rawHtml,
+              markdown: htmlToMarkdownNative(rawHtml),
+            }
+          }
+        }
+
+        const fullArticle = {
+          ...editedArticle,
+          html: rawHtml,
+          markdown: htmlToMarkdownNative(rawHtml),
+          platformContents,
+        }
+
+        // 大数据通过 storage 中转，避免 runtime.sendMessage 的 64MiB 限制
+        const storageKey = await storeLargePayload(syncId, {
+          article: fullArticle,
+          platforms: platformsArr,
+          syncId,
+        })
+
+        await chrome.runtime.sendMessage({
+          type: 'SYNC_ARTICLE_FROM_EDITOR',
+          payload: { storageKey, syncId },
+        })
+      } catch (error) {
+        logger.error('Sync error:', error)
+        setError('同步失败: ' + (error instanceof Error ? error.message : '未知错误'))
+        setStatus('idle')
+      }
+    }
   }
 
-  const handleRetryFailed = () => {
+  const handleRetryFailed = async () => {
     const failedPlatforms = results.filter(r => !r.success).map(r => r.platform)
     if (failedPlatforms.length === 0) return
 
@@ -208,54 +419,59 @@ export function EditorApp() {
     setResults(prev => prev.filter(r => r.success))
     setPlatformProgress(new Map())
 
-    try {
-      const configResponse = await chrome.runtime.sendMessage({
-        type: 'GET_PREPROCESS_CONFIGS',
-        platforms: failedPlatforms,
-      })
-      const configs = configResponse?.configs || {}
-
-      const platformContents: Record<string, PreprocessResult> = {}
-      for (const platformId of failedPlatforms) {
-        const config = configs[platformId]
-        if (config) {
-          platformContents[platformId] = preprocessForPlatform(rawHtml, config)
-        } else {
-          const tempDiv = document.createElement('div')
-          tempDiv.innerHTML = rawHtml
-          preprocessContentDOM(tempDiv)
-          const html = tempDiv.innerHTML
-          platformContents[platformId] = {
-            html,
-            markdown: htmlToMarkdownNative(html),
-          }
-        }
-      }
-
-      const editedArticle = {
-        ...article!,
-        title: titleRef.current?.innerText || article!.title,
-        content: rawHtml,
-        html: rawHtml,
-        markdown: htmlToMarkdownNative(rawHtml),
-        platformContents,
-      }
-
-      // 大数据通过 storage 中转，避免 runtime.sendMessage 的 64MiB 限制
-      const storageKey = await storeLargePayload(syncId, {
+    if (isInIframe) {
+      window.parent.postMessage(JSON.stringify({
+        type: 'START_SYNC',
         article: editedArticle,
         platforms: failedPlatforms,
         syncId,
-      })
+      }), '*')
+    } else {
+      try {
+        const rawHtml = editedArticle.content || ''
 
-      await chrome.runtime.sendMessage({
-        type: 'SYNC_ARTICLE_FROM_EDITOR',
-        payload: { storageKey, syncId },
-      })
-    } catch (error) {
-      console.error('Retry sync error:', error)
-      setError('重试失败: ' + (error instanceof Error ? error.message : '未知错误'))
-      setStatus('idle')
+        const configResponse = await chrome.runtime.sendMessage({
+          type: 'GET_PREPROCESS_CONFIGS',
+          platforms: failedPlatforms,
+        })
+        const configs = configResponse?.configs || {}
+
+        const platformContents: Record<string, PreprocessResult> = {}
+        for (const platformId of failedPlatforms) {
+          const config = configs[platformId]
+          if (config) {
+            platformContents[platformId] = preprocessForPlatform(rawHtml, config)
+          } else {
+            // 无预处理配置，直接使用原始 HTML
+            platformContents[platformId] = {
+              html: rawHtml,
+              markdown: htmlToMarkdownNative(rawHtml),
+            }
+          }
+        }
+
+        const fullArticle = {
+          ...editedArticle,
+          html: rawHtml,
+          markdown: htmlToMarkdownNative(rawHtml),
+          platformContents,
+        }
+
+        const storageKey = await storeLargePayload(syncId, {
+          article: fullArticle,
+          platforms: failedPlatforms,
+          syncId,
+        })
+
+        await chrome.runtime.sendMessage({
+          type: 'SYNC_ARTICLE_FROM_EDITOR',
+          payload: { storageKey, syncId },
+        })
+      } catch (error) {
+        logger.error('Retry sync error:', error)
+        setError('重试失败: ' + (error instanceof Error ? error.message : '未知错误'))
+        setStatus('idle')
+      }
     }
   }
 
@@ -286,13 +502,36 @@ export function EditorApp() {
       {/* Toolbar */}
       <header className="fixed top-0 left-0 right-0 bg-white border-b shadow-sm z-50">
         <div className="px-6 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3 flex-shrink-0">
             <img src={chrome.runtime.getURL('assets/icon-48.png')} alt="Logo" className="w-6 h-6" />
-            <span className="font-medium text-gray-700">同步助手 - 点击内容可直接修改</span>
-            {article?.extractor && (
-              <span className="px-2 py-0.5 text-xs font-mono bg-gray-100 text-gray-500 rounded opacity-0 hover:opacity-100 transition-opacity" title="Content extractor used">
-                {article.extractor}
-              </span>
+            <span className="font-medium text-gray-700 whitespace-nowrap">同步助手</span>
+          </div>
+
+          {/* 平台选择 chips */}
+          <div className="flex-1 mx-4 flex items-center gap-1.5 overflow-x-auto">
+            {platforms.filter(p => p.isAuthenticated).map(platform => {
+              const isSelected = selectedPlatforms.includes(platform.id)
+              return (
+                <button
+                  key={platform.id}
+                  onClick={() => handleTogglePlatform(platform.id)}
+                  className={cn(
+                    'flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium transition-all whitespace-nowrap border',
+                    isSelected
+                      ? 'bg-blue-50 text-blue-700 border-blue-200'
+                      : 'bg-gray-50 text-gray-400 border-gray-200 hover:bg-gray-100'
+                  )}
+                >
+                  {platform.icon && (
+                    <img src={platform.icon} alt="" className="w-3.5 h-3.5 rounded-sm" />
+                  )}
+                  {platform.name}
+                  {isSelected && <Check className="w-3 h-3" />}
+                </button>
+              )
+            })}
+            {platforms.filter(p => p.isAuthenticated).length === 0 && (
+              <span className="text-xs text-gray-400">暂无已登录平台</span>
             )}
           </div>
 
@@ -306,6 +545,25 @@ export function EditorApp() {
           />
 
           <div className="flex items-center gap-2">
+            <button
+              onClick={handleImportClick}
+              disabled={isImporting || status === 'syncing'}
+              className={cn(
+                'px-3 py-2 rounded-lg text-sm flex items-center gap-1 transition-colors',
+                (isImporting || status === 'syncing')
+                  ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                  : 'bg-blue-50 text-blue-600 hover:bg-blue-100'
+              )}
+              title="导入 Word 或 Markdown 文档"
+            >
+              {isImporting ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <FileUp className="w-4 h-4" />
+              )}
+              导入
+            </button>
+
             <button
               onClick={() => setShowSyncDialog(true)}
               className={cn(
@@ -328,6 +586,53 @@ export function EditorApp() {
             </button>
           </div>
         </div>
+
+        {/* 富文本工具栏 */}
+        <div className="px-6 py-2 bg-white border-t flex items-center justify-center gap-1 flex-wrap">
+          <button onClick={handleBold} className="p-1.5 rounded hover:bg-gray-100" title="粗体">
+            <Bold className="w-4 h-4" />
+          </button>
+          <button onClick={handleItalic} className="p-1.5 rounded hover:bg-gray-100" title="斜体">
+            <Italic className="w-4 h-4" />
+          </button>
+          <button onClick={handleUnderline} className="p-1.5 rounded hover:bg-gray-100" title="下划线">
+            <Underline className="w-4 h-4" />
+          </button>
+          <div className="w-px h-5 bg-gray-300 mx-1" />
+          <button onClick={handleHeading1} className="p-1.5 rounded hover:bg-gray-100 text-xs font-bold" title="标题1">
+            H1
+          </button>
+          <button onClick={handleHeading2} className="p-1.5 rounded hover:bg-gray-100 text-xs font-bold" title="标题2">
+            H2
+          </button>
+          <button onClick={handleHeading3} className="p-1.5 rounded hover:bg-gray-100 text-xs font-bold" title="标题3">
+            H3
+          </button>
+          <div className="w-px h-5 bg-gray-300 mx-1" />
+          <button onClick={handleBulletList} className="p-1.5 rounded hover:bg-gray-100" title="无序列表">
+            <List className="w-4 h-4" />
+          </button>
+          <button onClick={handleNumberedList} className="p-1.5 rounded hover:bg-gray-100" title="有序列表">
+            <ListOrdered className="w-4 h-4" />
+          </button>
+          <div className="w-px h-5 bg-gray-300 mx-1" />
+          <button onClick={handleAlignLeft} className="p-1.5 rounded hover:bg-gray-100" title="左对齐">
+            <AlignLeft className="w-4 h-4" />
+          </button>
+          <button onClick={handleAlignCenter} className="p-1.5 rounded hover:bg-gray-100" title="居中">
+            <AlignCenter className="w-4 h-4" />
+          </button>
+          <button onClick={handleAlignRight} className="p-1.5 rounded hover:bg-gray-100" title="右对齐">
+            <AlignRight className="w-4 h-4" />
+          </button>
+          <div className="w-px h-5 bg-gray-300 mx-1" />
+          <button onClick={handleQuote} className="p-1.5 rounded hover:bg-gray-100" title="引用">
+            <Quote className="w-4 h-4" />
+          </button>
+          <button onClick={handleCode} className="p-1.5 rounded hover:bg-gray-100" title="代码">
+            <Code className="w-4 h-4" />
+          </button>
+        </div>
       </header>
 
       {/* Rate limit warning */}
@@ -347,8 +652,8 @@ export function EditorApp() {
       )}
 
       {/* Article content area */}
-      <main className="pt-16 pb-16">
-        <article className="w-full max-w-4xl mx-auto bg-white shadow-sm px-12 py-10" style={{ minHeight: 'calc(100vh - 4rem)' }}>
+      <main className="pt-32 pb-16">
+        <article className="w-full max-w-4xl mx-auto bg-white shadow-sm px-12 py-10" style={{ minHeight: 'calc(100vh - 8rem)' }}>
           {article.cover && (
             <img
               src={article.cover}

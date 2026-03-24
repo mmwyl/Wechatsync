@@ -13,6 +13,7 @@ import * as wordpressAdapter from '../adapters/cms/wordpress'
 import * as metaweblogAdapter from '../adapters/cms/metaweblog'
 import { startMcpClient, stopMcpClient, getMcpStatus, mcpClient } from '../mcp/client'
 import { createLogger } from '../lib/logger'
+import { retrieveLargePayload, cleanupStalePayloads } from '../lib/large-message'
 import {
   trackInstall,
   trackCmsSync,
@@ -1154,15 +1155,16 @@ chrome.runtime.onInstalled.addListener(async details => {
 
     // 重要版本升级时显示更新日志
     const showChangelogVersions = ['2.0.8']
-    if (
-      showChangelogVersions.includes(currentVersion) ||
-      (previousVersion.startsWith('1.') && currentVersion.startsWith('2.'))
-    ) {
-      chrome.tabs.create({
-        url: 'https://www.wechatsync.com/changelog?from=' + previousVersion + '&to=' + currentVersion,
-        active: true,
-      })
-    }
+    // if (
+    //   showChangelogVersions.includes(currentVersion) ||
+    //   (previousVersion.startsWith('1.') && currentVersion.startsWith('2.'))
+    // )
+    // {
+    //   chrome.tabs.create({
+    //     url: 'https://www.wechatsync.com/changelog?from=' + previousVersion + '&to=' + currentVersion,
+    //     active: true,
+    //   })
+    // }
   }
 
   // 首次安装时打开欢迎页（已禁用）
@@ -1276,44 +1278,6 @@ async function clearOrphanedRules() {
 // 启动时清理遗留规则
 clearOrphanedRules()
 
-// 首次启动时拉取远程配置（带缓存检查）
-fetchConfigIfNeeded().catch(() => {})
-
-// 检查版本更新（用于 ZIP 安装用户）
-// 如有新版本，在扩展图标上显示 badge 提醒
-checkForUpdates().then(async (result) => {
-  if (result.hasUpdate && result.info) {
-    // 检查用户是否已忽略此版本
-    const isDismissed = await isUpdateDismissed(result.info.version)
-    if (!isDismissed) {
-      // 显示更新 badge
-      await chrome.action.setBadgeText({ text: 'NEW' })
-      await chrome.action.setBadgeBackgroundColor({ color: BADGE_COLORS.update })
-      logger.info('Update badge shown for version:', result.info.version)
-    }
-  }
-}).catch(() => {})
-
-/**
- * 清理遗留的动态规则（防止扩展崩溃后规则残留影响其他网站）
- */
-async function clearOrphanedRules() {
-  try {
-    const rules = await chrome.declarativeNetRequest.getDynamicRules()
-    if (rules.length > 0) {
-      logger.info(`Clearing ${rules.length} orphaned dynamic rules...`)
-      await chrome.declarativeNetRequest.updateDynamicRules({
-        removeRuleIds: rules.map(r => r.id),
-      })
-      logger.info('Orphaned rules cleared')
-    }
-  } catch (error) {
-    logger.error('Failed to clear orphaned rules:', error)
-  }
-}
-
-// 启动时清理遗留规则
-clearOrphanedRules()
 
 logger.info('Service Worker started')
 
