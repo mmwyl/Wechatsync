@@ -235,11 +235,14 @@ export abstract class CodeAdapter implements PlatformAdapter {
     // 提取所有图片（HTML + Markdown）
     const matches: { full: string; src: string; alt?: string; type: 'html' | 'markdown' }[] = []
 
-    // 1. HTML 格式: <img ... src="url" ...>
-    const htmlImgRegex = /<img[^>]+src="([^"]+)"[^>]*>/gi
+    // 1. HTML 格式: <img ... src="url" ...> / <img ... src='url' ...> / <img ... src=url ...>
+    // 注意: 文档导入/Word 转换后，可能出现引号形式差异甚至 src 周围存在空格。
+    // 这里尽量兼容常见变体，但仍限定只在 img 标签内部提取 src。
+    const htmlImgRegex = /<img[^>]+\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s"'<>]+))[^>]*>/gi
     let match
     while ((match = htmlImgRegex.exec(content)) !== null) {
-      matches.push({ full: match[0], src: match[1], type: 'html' })
+      const src = match[1] || match[2] || match[3] || ''
+      matches.push({ full: match[0], src, type: 'html' })
     }
 
     // 2. Markdown 格式: ![alt](url)
@@ -248,6 +251,11 @@ export abstract class CodeAdapter implements PlatformAdapter {
     }
 
     if (matches.length === 0) {
+      // 只有在 content 里明显存在 img 标签，但正则未能匹配到 src 时才告警
+      // 这类情况通常意味着 Word/导入后的 HTML 结构与正则不兼容。
+      if (/<img\b/i.test(content)) {
+        logger.warn('processImages: found <img> tags but no <img src=...> matches (HTML may use an unexpected src attribute form)')
+      }
       return content
     }
 
@@ -287,14 +295,24 @@ export abstract class CodeAdapter implements PlatformAdapter {
         // 根据格式构建替换内容
         let replacement: string
         if (type === 'html') {
-          // HTML 格式
-          replacement = `<img src="${uploadResult.url}"`
-          if (uploadResult.attrs) {
-            for (const [key, value] of Object.entries(uploadResult.attrs)) {
-              replacement += ` ${key}="${value}"`
+          // HTML 格式：尽量保留原始 <img> 标签结构，仅替换 src。
+          // 这样能避免某些平台（例如富文本解析器）对 `<img ... />` 自闭合或属性组合较敏感的问题。
+          replacement = full.replace(
+            /\bsrc\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'<>]+)/i,
+            `src="${uploadResult.url}"`
+          )
+
+          if (uploadResult.attrs && Object.keys(uploadResult.attrs).length > 0) {
+            const attrsStr = Object.entries(uploadResult.attrs)
+              .map(([key, value]) => ` ${key}="${value}"`)
+              .join('')
+
+            if (/\/>\s*$/.test(replacement)) {
+              replacement = replacement.replace(/\/>\s*$/, `${attrsStr} />`)
+            } else {
+              replacement = replacement.replace(/>\s*$/, `${attrsStr}>`)
             }
           }
-          replacement += ' />'
         } else {
           // Markdown 格式
           replacement = `![${alt || ''}](${uploadResult.url})`
