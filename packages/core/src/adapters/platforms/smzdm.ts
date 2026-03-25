@@ -147,6 +147,9 @@ export class SmzdmAdapter extends CodeAdapter {
         }
       )
 
+      // 对正文 HTML 中的图片做结构封装，匹配 smzdm 投稿编辑器期望的 wrapper 结构
+      content = this.wrapImagesForSmzdm(content)
+
       // 3. 先初始化草稿上下文（编辑器真实流程会先请求该接口）
       await this.initDraft(this.currentArticleId)
 
@@ -448,6 +451,13 @@ export class SmzdmAdapter extends CodeAdapter {
       const normalizedSrc = src.replace(/&amp;/g, '&').replace(/#.*$/, '')
       let blob: Blob
 
+      // Word 内嵌图片通常是 data URI，但运行时环境里 fetch(dataUri).blob() 的 blob.type 可能为空或不一致。
+      // 为避免误判为“非图片”导致不上传，这里从 data URI 里优先解析 mime，再决定是否尝试上传。
+      const isDataUri = normalizedSrc.startsWith('data:')
+      const dataUriMimeMatch = isDataUri ? normalizedSrc.match(/^data:([^;,]+)[;,]/i) : null
+      const dataUriMime = (dataUriMimeMatch?.[1] || '').trim()
+      const isLikelyImageFromMime = dataUriMime ? dataUriMime.toLowerCase().startsWith('image/') : false
+
       if (normalizedSrc.startsWith('data:')) {
         blob = await fetch(normalizedSrc).then(r => r.blob())
       } else {
@@ -464,7 +474,22 @@ export class SmzdmAdapter extends CodeAdapter {
 
       // 下载到非图片内容（例如反爬返回 HTML）时，保留原图链接避免插入损坏图片
       if (!blob.type.startsWith('image/')) {
-        return { url: src }
+        // 对于非 data URI：blob.type 不是 image/ 直接跳过，避免把 HTML 当图片上传。
+        if (!isDataUri) {
+          return { url: src }
+        }
+
+        // 对于 data URI：
+        // - 如果 mime 明确不是 image/*，则跳过
+        // - 如果 mime 为空/不可靠，则仍尝试上传（失败则在后续返回原图，避免影响其它图片）
+        if (dataUriMime && !isLikelyImageFromMime) {
+          return { url: src }
+        }
+
+        // 如果 mime 可解析但 blob.type 为空，则补齐 Blob 类型，提升兼容性
+        if (dataUriMime && !blob.type) {
+          blob = new Blob([blob], { type: dataUriMime })
+        }
       }
 
       // 历史版本编辑器存在两种上传路径，优先使用 /api，404 时回退 /post/api
@@ -478,7 +503,8 @@ export class SmzdmAdapter extends CodeAdapter {
         const formData = new FormData()
         formData.append('imgFile', blob, `image_${Date.now()}.jpg`)
         formData.append('id', 'WU_FILE_0')
-        formData.append('type', blob.type || 'image/png')
+        // type 字段用于匹配服务端校验；对 data URI 的情况尽量写入解析到的 mime
+        formData.append('type', blob.type || (dataUriMime || 'image/png'))
         formData.append('article_id', this.currentArticleId)
 
         const uploadResponse = await this.runtime.fetch(uploadUrl, {
@@ -514,5 +540,46 @@ export class SmzdmAdapter extends CodeAdapter {
     } catch (error) {
       return { url: src }
     }
+  }
+
+  /**
+   * smzdm 投稿编辑器对正文图片的“可计数/可渲染”结构有要求：
+   * 你手动上传时，DOM 中实际是 <div class="container-img container-img__selected"><img .../></div> 这种块级 wrapper。
+   * 文档导入/同步时，我们通常只能替换 <img src="...">，如果缺少 wrapper，服务端/编辑器侧可能不会把它当作图片。
+   *
+   * 为了不影响其它平台，只对 smzdm 的正文 HTML 做轻量封装：
+   *  - 仅当 <img> 标签本身没有包含 image-view__body__imagepixelate（手动上传生成的 img 类）时才包一层 wrapper
+   *  - 避免对已是正确结构的图片重复包裹
+   */
+  private wrapImagesForSmzdm(html: string): string {
+    const wrapperClass = 'container-img container-img__selected'
+
+    // smzdm 投稿编辑器使用 ProseMirror。
+    // 当图片前面带有空的 trailingBreak 节点（例如 `<p><br class="ProseMirror-trailingBreak"></p>`），
+    // 页面会在图片上方显示“多一行空白”。手动上传不会出现这种 trailingBreak。
+    // 这里仅在图片前紧跟空 trailingBreak 时清理，避免影响其它内容排版。
+    let cleaned = html
+      // 专门清理 trailingBreak
+      .replace(/<p>\s*<br[^>]*ProseMirror-trailingBreak[^>]*>\s*<\/p>\s*(?=<img\b)/gi, '')
+      // 兜底：清理纯空段落 br（仍限定必须紧跟在 img 前）
+      .replace(/<p>\s*<br\s*\/?>\s*<\/p>\s*(?=<img\b)/gi, '')
+
+    return cleaned.replace(/<img\b[^>]*>/gi, (imgTag) => {
+      // 已是编辑器生成的 img（通常带像素化类），不重复包裹。
+      // 这里仍保留原 imgTag，避免破坏已经正确解析的节点。
+      if (/image-view__body__imagepixelate/i.test(imgTag)) {
+        return imgTag
+      }
+
+      // 净化 <img>：只保留 src，移除 alt/title/data-* 等可能携带“默认描述/ID”的属性。
+      // 这样可以减少编辑器把 md5-like 字符串写入图片说明输入框的问题。
+      const srcMatch = imgTag.match(/src\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s"'<>]+))/i)
+      const src = (srcMatch?.[1] || srcMatch?.[2] || srcMatch?.[3] || '').trim()
+
+      if (!src) return imgTag
+
+      const sanitizedImgTag = `<img src="${src}">`
+      return `<div class="${wrapperClass}">${sanitizedImgTag}</div>`
+    })
   }
 }
