@@ -30,10 +30,12 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@types/crypto-js": "^4.2.2",
     "@types/marked": "^6.0.0",
-    "jszip": "^3.10.1",
+    "crypto-js": "^4.2.0",
     "hast-util-to-string": "^3.0.0",
     "js-md5": "^0.8.3",
+    "jszip": "^3.10.1",
     "juice": "^11.1.0",
     "linkedom": "^0.18.12",
     "markdown-draft-js": "^2.4.0",

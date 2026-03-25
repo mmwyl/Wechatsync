@@ -207,7 +207,10 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
 
     case 'SYNC_ARTICLE': {
       // 从 storage 中读取大型 payload，避免消息体超过 64MiB 限制
-      const { storageKey, syncId: passedSyncId } = message.payload
+      const { storageKey, syncId: passedSyncId } = message.payload || {}
+      if (!storageKey) {
+        throw new Error('SYNC_ARTICLE 缺少 storageKey，无法读取同步数据')
+      }
       const payload = await retrieveLargePayload<{
         article: any
         platforms: string[]
