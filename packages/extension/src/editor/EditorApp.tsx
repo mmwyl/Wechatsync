@@ -91,7 +91,8 @@ export function EditorApp() {
 
         if (storage.editorPlatforms) {
           logger.info('Loading platforms from storage:', storage.editorPlatforms.length)
-          setPlatforms(storage.editorPlatforms.map((p: any) => ({
+          const filtered = storage.editorPlatforms.filter((p: any) => p.id !== 'zip-download')
+          setPlatforms(filtered.map((p: any) => ({
             id: p.id,
             name: p.name,
             icon: p.icon,
@@ -102,7 +103,7 @@ export function EditorApp() {
           // 从 storage 恢复已选中的平台
           const storedSelection = await chrome.storage.local.get(SELECTED_PLATFORMS_KEY)
           const storedPlatforms = storedSelection[SELECTED_PLATFORMS_KEY] as string[] | undefined
-          const authenticated = storage.editorPlatforms.filter((p: any) => p.isAuthenticated)
+          const authenticated = filtered.filter((p: any) => p.isAuthenticated)
           const authenticatedIds = authenticated.map((p: any) => p.id)
 
           if (storedPlatforms && storedPlatforms.length > 0) {
@@ -181,14 +182,16 @@ export function EditorApp() {
             contentRef.current.innerHTML = data.article.content
           }
         } else if (data.type === 'PLATFORMS_DATA') {
-          setPlatforms(data.platforms)
+          const filteredPlatforms = (data.platforms || []).filter((p: Platform) => p.id !== 'zip-download')
+          setPlatforms(filteredPlatforms)
           if (data.selectedPlatformIds && data.selectedPlatformIds.length > 0) {
-            setSelectedPlatforms(data.selectedPlatformIds)
-            saveSelectedPlatforms(data.selectedPlatformIds)
+            const filteredSelected = data.selectedPlatformIds.filter((id: string) => id !== 'zip-download')
+            setSelectedPlatforms(filteredSelected)
+            saveSelectedPlatforms(filteredSelected)
           } else {
             chrome.storage.local.get(SELECTED_PLATFORMS_KEY).then((result) => {
               const storedPlatforms = result[SELECTED_PLATFORMS_KEY] as string[] | undefined
-              const authenticated = data.platforms.filter((p: Platform) => p.isAuthenticated)
+              const authenticated = filteredPlatforms.filter((p: Platform) => p.isAuthenticated)
               const authenticatedIds = authenticated.map((p: Platform) => p.id)
               const authenticatedSet = new Set(authenticatedIds)
 
@@ -509,6 +512,27 @@ export function EditorApp() {
 
           {/* 平台选择 chips */}
           <div className="flex-1 mx-4 flex items-center gap-1.5 overflow-x-auto">
+            {authenticatedCount > 0 && (
+              // 导入/编辑后顶部提供快速批量选择，保持与 backup 分支的一致交互
+              <div className="flex items-center gap-1 flex-shrink-0 mr-1">
+                <button
+                  onClick={handleSelectAll}
+                  disabled={status === 'syncing'}
+                  className="px-2 py-1 text-xs rounded border border-gray-300 bg-white hover:bg-gray-50 text-gray-600 disabled:opacity-50 whitespace-nowrap"
+                >
+                  全选
+                </button>
+                <button
+                  onClick={handleDeselectAll}
+                  disabled={status === 'syncing' || selectedPlatforms.length === 0}
+                  className="px-2 py-1 text-xs rounded border border-gray-300 bg-white hover:bg-gray-50 text-gray-600 disabled:opacity-50 whitespace-nowrap"
+                  title="全不选"
+                >
+                  全不选
+                </button>
+              </div>
+            )}
+
             {platforms.filter(p => p.isAuthenticated).map(platform => {
               const isSelected = selectedPlatforms.includes(platform.id)
               return (
@@ -530,8 +554,9 @@ export function EditorApp() {
                 </button>
               )
             })}
+
             {platforms.filter(p => p.isAuthenticated).length === 0 && (
-              <span className="text-xs text-gray-400">暂无已登录平台</span>
+              <span className="text-xs text-gray-400 whitespace-nowrap">暂无已登录平台</span>
             )}
           </div>
 

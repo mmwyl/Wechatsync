@@ -195,9 +195,13 @@ async function handleMessage(message: MessageAction, sender?: chrome.runtime.Mes
         }))
 
       const allPlatforms = [...dslWithType, ...cmsPlatforms]
+
+      // 隐藏本地导出 ZIP（“Markdown 压缩包”），不允许在主页/编辑区域出现
+      const filteredPlatforms = allPlatforms.filter((p: any) => p.id !== 'zip-download')
+
       // 缓存完整平台列表，供 popup 启动时立即渲染
-      chrome.storage.local.set({ platformListCache: allPlatforms }).catch(() => {})
-      return { platforms: allPlatforms }
+      chrome.storage.local.set({ platformListCache: filteredPlatforms }).catch(() => {})
+      return { platforms: filteredPlatforms }
     }
 
     case 'CHECK_AUTH': {

@@ -192,21 +192,39 @@ export class CSDNAdapter extends CodeAdapter {
         }
       }
 
-      // Use pre-processed markdown content directly
+      // Use pre-processed markdown/html content directly
       let markdown = article.markdown || ''
+      let htmlContent = article.html || ''
 
-      // Process images in markdown
+      // 导入时图片可能以 data:image/* base64 形式出现在 HTML 里（会导致 CSDN 保存接口的“正文字数太多”）
+      // 因此 markdown 和 html 都需要做图片上传替换；并复用同一份缓存避免重复上传。
+      const uploadCache = new Map<string, ImageUploadResult>()
+      const uploadCached = async (src: string): Promise<ImageUploadResult> => {
+        const cached = uploadCache.get(src)
+        if (cached) return cached
+        const result = await this.uploadImageByUrl(src)
+        uploadCache.set(src, result)
+        return result
+      }
+
+      // Process images in markdown (markdowncontent 字段)
       markdown = await this.processImages(
         markdown,
-        (src) => this.uploadImageByUrl(src),
+        uploadCached,
         {
           skipPatterns: ['csdnimg.cn', 'csdn.net'],
           onProgress: options?.onImageProgress,
         }
       )
 
-      // Get HTML content (CSDN API needs both markdown and HTML)
-      const htmlContent = article.html || ''
+      // Process images in HTML (content 字段) to avoid base64 impacting word-count limits
+      htmlContent = await this.processImages(
+        htmlContent,
+        uploadCached,
+        {
+          skipPatterns: ['csdnimg.cn', 'csdn.net'],
+        }
+      )
 
       // Generate signature and save article
       const apiPath = '/blog-console-api/v3/mdeditor/saveArticle'
@@ -299,8 +317,24 @@ export class CSDNAdapter extends CodeAdapter {
     const imageBlob = await imageResponse.blob()
 
     // 2. 获取文件扩展名
-    const ext = src.split('.').pop()?.toLowerCase()?.split('?')[0] || 'jpg'
-    const validExt = ['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(ext) ? ext : 'jpg'
+    let validExt = 'jpg'
+    if (src.startsWith('data:')) {
+      // data URI: data:image/png;base64,xxxxx
+      const match = src.match(/^data:([^;]+);/i)
+      const mimeType = match?.[1]?.toLowerCase()
+      const mimeToExt: Record<string, string> = {
+        'image/jpeg': 'jpeg',
+        'image/jpg': 'jpeg',
+        'image/png': 'png',
+        'image/gif': 'gif',
+        'image/webp': 'webp',
+      }
+      const mapped = mimeToExt[mimeType || '']
+      if (mapped) validExt = mapped
+    } else {
+      const ext = src.split('.').pop()?.toLowerCase()?.split('?')[0] || 'jpg'
+      validExt = ['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(ext) ? ext : 'jpg'
+    }
 
     // 3. 获取上传签名 (新 API: bizapi.csdn.net)
     const apiPath = '/resource-api/v1/image/direct/upload/signature'

@@ -56,7 +56,8 @@ export function HomeNew() {
       try {
         const cached = await chrome.storage.local.get('platformListCache')
         if (cached.platformListCache?.length) {
-          setAllPlatforms(cached.platformListCache.map((p: any) => ({
+          const filtered = cached.platformListCache.filter((p: any) => p.id !== 'zip-download')
+          setAllPlatforms(filtered.map((p: any) => ({
             id: p.id, name: p.name, icon: p.icon,
             isAuthenticated: p.isAuthenticated, username: p.username,
             homepage: p.homepage,
@@ -81,11 +82,13 @@ export function HomeNew() {
   const loadAllPlatforms = async () => {
     try {
       const response = await chrome.runtime.sendMessage({ type: 'CHECK_ALL_AUTH', payload: { forceRefresh: false } })
-      const mapped: DialogPlatform[] = (response.platforms || []).map((p: any) => ({
-        id: p.id, name: p.name, icon: p.icon,
-        isAuthenticated: p.isAuthenticated, username: p.username,
-        homepage: p.homepage,
-      }))
+      const mapped: DialogPlatform[] = (response.platforms || [])
+        .filter((p: any) => p.id !== 'zip-download')
+        .map((p: any) => ({
+          id: p.id, name: p.name, icon: p.icon,
+          isAuthenticated: p.isAuthenticated, username: p.username,
+          homepage: p.homepage,
+        }))
       setAllPlatforms(mapped)
       await loadPlatforms()
     } catch (error) {
@@ -129,7 +132,7 @@ export function HomeNew() {
         chrome.storage.local.set({ pendingArticle: importedArticle }),
       ])
 
-      const platforms = storageResponse?.platforms || []
+      const platforms = (storageResponse?.platforms || []).filter((p: any) => p.id !== 'zip-download')
 
       // 保存平台信息到 storage
       await chrome.storage.local.set({ editorPlatforms: platforms })
