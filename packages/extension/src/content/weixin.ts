@@ -193,14 +193,23 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       platforms: string[]
       configs: Record<string, PreprocessConfig>
     }
-    const platformContents: Record<string, { html: string; markdown: string }> = {}
-    for (const platformId of platforms) {
-      const config = configs[platformId]
-      if (config) {
-        platformContents[platformId] = preprocessForPlatform(rawHtml, config)
+    const run = async () => {
+      const platformContents: Record<string, { html: string; markdown: string }> = {}
+      for (const platformId of platforms) {
+        const config = configs[platformId]
+        if (config) {
+          platformContents[platformId] = await preprocessForPlatform(rawHtml, config)
+        }
       }
+      sendResponse({ platformContents })
     }
-    sendResponse({ platformContents })
+
+    run().catch(error => {
+      sendResponse({
+        platformContents: {},
+        error: (error as Error).message,
+      })
+    })
     return true
   }
 })

@@ -1079,27 +1079,29 @@ function preprocessForMultiplePlatformsLocal(
   rawHtml: string,
   platformIds: string[],
   configs: Record<string, PreprocessConfig>
-): Record<string, PreprocessResult> {
+): Promise<Record<string, PreprocessResult>> {
   const results: Record<string, PreprocessResult> = {}
 
-  for (const platformId of platformIds) {
-    const config = configs[platformId]
-    if (config) {
-      results[platformId] = preprocessForPlatform(rawHtml, config)
-    } else {
-      // 没有配置的平台使用默认处理
-      const tempDiv = document.createElement('div')
-      tempDiv.innerHTML = rawHtml
-      preprocessContentDOM(tempDiv)
-      const html = tempDiv.innerHTML
-      results[platformId] = {
-        html,
-        markdown: htmlToMarkdownNative(html),
+  return (async () => {
+    for (const platformId of platformIds) {
+      const config = configs[platformId]
+      if (config) {
+        results[platformId] = await preprocessForPlatform(rawHtml, config)
+      } else {
+        // 没有配置的平台使用默认处理
+        const tempDiv = document.createElement('div')
+        tempDiv.innerHTML = rawHtml
+        preprocessContentDOM(tempDiv)
+        const html = tempDiv.innerHTML
+        results[platformId] = {
+          html,
+          markdown: htmlToMarkdownNative(html),
+        }
       }
     }
-  }
 
-  return results
+    return results
+  })()
 }
 
 /**
@@ -1128,7 +1130,7 @@ window.addEventListener('message', async (event) => {
       const configs: Record<string, PreprocessConfig> = configResponse?.configs || {}
 
       // 为每个平台分别预处理
-      const platformContents = preprocessForMultiplePlatformsLocal(rawHtml, platforms, configs)
+      const platformContents = await preprocessForMultiplePlatformsLocal(rawHtml, platforms, configs)
 
       logger.debug('Preprocessed contents for platforms:', Object.keys(platformContents))
 
@@ -1188,8 +1190,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       platforms: string[]
       configs: Record<string, PreprocessConfig>
     }
-    const platformContents = preprocessForMultiplePlatformsLocal(rawHtml, platforms, configs)
-    sendResponse({ platformContents })
+    const run = async () => {
+      const platformContents = await preprocessForMultiplePlatformsLocal(rawHtml, platforms, configs)
+      sendResponse({ platformContents })
+    }
+    run().catch(error => {
+      sendResponse({ platformContents: {}, error: (error as Error).message })
+    })
+    return true
   } else if (message.type === 'SYNC_PROGRESS') {
     // 转发同步进度到编辑器（带上 syncId）
     editorIframe?.contentWindow?.postMessage(JSON.stringify({

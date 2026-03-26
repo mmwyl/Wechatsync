@@ -11,6 +11,7 @@
 
 import { htmlToMarkdownNative, type PreprocessConfig } from '@wechatsync/core'
 import { createLogger } from './logger'
+import { toPng } from 'html-to-image'
 
 const logger = createLogger('ContentProcessor')
 
@@ -36,7 +37,7 @@ export interface PreprocessResult {
  * 注意：代码块应在入口处用 backupAndSimplifyCodeBlocks 在原始 DOM 上预处理，
  * 此函数中的 processCodeBlocks 会跳过已处理的代码块（有 data-code-simplified 标记）
  */
-export function preprocessForPlatform(rawHtml: string, config: PreprocessConfig): PreprocessResult {
+export async function preprocessForPlatform(rawHtml: string, config: PreprocessConfig): Promise<PreprocessResult> {
   // 创建临时 DOM 容器
   const container = document.createElement('div')
   container.innerHTML = rawHtml
@@ -132,7 +133,9 @@ export function preprocessForPlatform(rawHtml: string, config: PreprocessConfig)
     compactHtml(container)
   }
 
-  if (config.convertTablesToText) {
+  if (config.convertTablesToPng) {
+    await convertTablesToPng(container)
+  } else if (config.convertTablesToText) {
     convertTablesToText(container)
   }
 
@@ -163,14 +166,14 @@ export function preprocessForPlatform(rawHtml: string, config: PreprocessConfig)
  * @param configs 各平台的预处理配置 { platformId: config }
  * @returns 各平台的预处理结果 { platformId: { html, markdown } }
  */
-export function preprocessForMultiplePlatforms(
+export async function preprocessForMultiplePlatforms(
   rawHtml: string,
   configs: Record<string, PreprocessConfig>
-): Record<string, PreprocessResult> {
+): Promise<Record<string, PreprocessResult>> {
   const results: Record<string, PreprocessResult> = {}
 
   for (const [platformId, config] of Object.entries(configs)) {
-    results[platformId] = preprocessForPlatform(rawHtml, config)
+    results[platformId] = await preprocessForPlatform(rawHtml, config)
   }
 
   return results
@@ -879,6 +882,114 @@ function removeNestedEmptyContainers(container: HTMLElement): void {
 
     if (removed === 0) break
   }
+}
+
+/**
+ * 将表格渲染为 PNG 图片（data URL），并替换原 table。
+ * 目标：避免目标平台对复杂 table HTML 二次清洗导致错位/排版破坏。
+ *
+ * 该转换发生在 Content Script 预处理阶段，因此后续 Service Worker 的图片上传逻辑会自动接管。
+ */
+async function convertTablesToPng(container: HTMLElement): Promise<void> {
+  const tables = Array.from(container.querySelectorAll('table'))
+  if (tables.length === 0) return
+
+  // 为了让 html-to-image 计算宽高，确保待渲染 DOM 处于文档流中。
+  const mount = document.createElement('div')
+  mount.style.cssText = `
+    position: fixed;
+    left: -100000px;
+    top: 0;
+    opacity: 0;
+    pointer-events: none;
+    z-index: -2147483647;
+  `
+  document.body.appendChild(mount)
+  mount.appendChild(container)
+
+  const MAX_TABLES = 30
+  const pixelRatio = 2
+  // 对齐编辑器常见正文宽度，避免图片过宽后被缩放得太小
+  const RENDER_MAX_WIDTH = 760
+  const RENDER_MIN_WIDTH = 420
+
+  const normalizeCellStyle = (styleText: string): string => {
+    // 去掉可能导致不换行的历史样式，避免和新样式冲突
+    return styleText
+      .replace(/white-space\s*:[^;]+;?/gi, '')
+      .replace(/word-break\s*:[^;]+;?/gi, '')
+      .replace(/overflow-wrap\s*:[^;]+;?/gi, '')
+      .replace(/text-overflow\s*:[^;]+;?/gi, '')
+  }
+
+  for (const table of tables.slice(0, MAX_TABLES)) {
+    try {
+      const sourceTable = table as HTMLTableElement
+      const clonedTable = sourceTable.cloneNode(true) as HTMLTableElement
+
+      // 让转图后的表格默认有清晰边框，接近编辑器里的观感
+      const tableStyle = clonedTable.getAttribute('style') || ''
+      clonedTable.setAttribute(
+        'style',
+        `${tableStyle};border-collapse:collapse;border-spacing:0;background:#fff;`
+      )
+
+      // 强制单元格可换行，优先保证可读性而不是挤成一行
+      clonedTable.querySelectorAll('th, td').forEach((cell) => {
+        const el = cell as HTMLElement
+        el.removeAttribute('nowrap')
+        const cleanedStyle = normalizeCellStyle(el.getAttribute('style') || '')
+        el.setAttribute(
+          'style',
+          `${cleanedStyle};white-space:normal;word-break:break-word;overflow-wrap:anywhere;line-height:1.8;vertical-align:top;padding:10px 12px;border:1px solid #d9d9d9;font-size:14px;`
+        )
+      })
+
+      // 控制渲染宽度：过宽时固定到正文宽度并让文字换行，避免最终缩放后字体过小
+      const preferredWidth = Math.min(
+        Math.max(sourceTable.getBoundingClientRect().width || RENDER_MAX_WIDTH, RENDER_MIN_WIDTH),
+        RENDER_MAX_WIDTH
+      )
+
+      const renderBox = document.createElement('div')
+      renderBox.style.cssText = `
+        width:${preferredWidth}px;
+        max-width:${RENDER_MAX_WIDTH}px;
+        background:#fff;
+      `
+      clonedTable.style.width = '100%'
+      clonedTable.style.maxWidth = '100%'
+      clonedTable.style.tableLayout = 'fixed'
+      renderBox.appendChild(clonedTable)
+      mount.appendChild(renderBox)
+
+      // 生成图片 data URL
+      const dataUrl = await toPng(renderBox, {
+        cacheBust: true,
+        pixelRatio,
+        backgroundColor: '#ffffff',
+      })
+
+      // 替换成图片，并做标记，后续 smzdm 图片 wrapper 可据此调整展示策略
+      const img = document.createElement('img')
+      img.src = dataUrl
+      img.alt = ''
+      img.dataset.wcsTableImg = '1'
+      img.style.display = 'block'
+      img.style.maxWidth = '100%'
+
+      table.replaceWith(img)
+      renderBox.remove()
+    } catch (error) {
+      // 某个表格渲染失败时不影响其它内容；保留原 table 交给后续逻辑处理
+      logger.warn('[convertTablesToPng] table render failed, keeping original table:', error)
+    }
+
+    // 避免连续渲染导致页面卡顿
+    await new Promise(resolve => setTimeout(resolve, 60))
+  }
+
+  mount.remove()
 }
 
 /**

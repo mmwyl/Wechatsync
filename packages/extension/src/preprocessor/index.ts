@@ -15,25 +15,33 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       configs: Record<string, PreprocessConfig>
     }
 
-    const platformContents: Record<string, PreprocessResult> = {}
+    const run = async () => {
+      const platformContents: Record<string, PreprocessResult> = {}
 
-    for (const platformId of platforms) {
-      const config = configs[platformId]
-      if (config) {
-        platformContents[platformId] = preprocessForPlatform(rawHtml, config)
-      } else {
-        const tempDiv = document.createElement('div')
-        tempDiv.innerHTML = rawHtml
-        preprocessContentDOM(tempDiv)
-        const html = tempDiv.innerHTML
-        platformContents[platformId] = {
-          html,
-          markdown: htmlToMarkdownNative(html),
+      for (const platformId of platforms) {
+        const config = configs[platformId]
+        if (config) {
+          platformContents[platformId] = await preprocessForPlatform(rawHtml, config)
+        } else {
+          const tempDiv = document.createElement('div')
+          tempDiv.innerHTML = rawHtml
+          preprocessContentDOM(tempDiv)
+          const html = tempDiv.innerHTML
+          platformContents[platformId] = {
+            html,
+            markdown: htmlToMarkdownNative(html),
+          }
         }
       }
+
+      sendResponse({ platformContents })
     }
 
-    sendResponse({ platformContents })
+    run().catch(error => {
+      // 预处理失败时，返回空结果让后续同步尽量降级运行
+      sendResponse({ platformContents: {} as Record<string, PreprocessResult>, error: (error as Error).message })
+    })
   }
-  return false
+  // 需要支持异步 sendResponse
+  return true
 })

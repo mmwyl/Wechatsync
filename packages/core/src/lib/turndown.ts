@@ -232,12 +232,31 @@ function cell(content: string, node: Element): string {
 }
 
 /**
+ * 规范化表格单元格文本，避免换行打断 markdown 表格行结构
+ */
+function normalizeTableCellContent(content: string): string {
+  return content
+    .replace(/\r?\n+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/\|/g, '\\|')
+    .trim()
+}
+
+/**
  * 获取表格的第一行（兼容 linkedom，不依赖 table.rows）
  */
 function getFirstRow(table: Element): Element | null {
   // linkedom 没有 table.rows，直接查询 tr
   const tr = table.querySelector('tr')
   return tr
+}
+
+/**
+ * 判断表格是否包含合并单元格
+ * Markdown 原生不支持 rowspan/colspan，强转会导致布局错乱
+ */
+function hasMergedCells(table: Element): boolean {
+  return !!table.querySelector('td[rowspan], td[colspan], th[rowspan], th[colspan]')
 }
 
 /**
@@ -303,7 +322,7 @@ function addExtensionRules(turndownService: TurndownService): void {
   turndownService.addRule('tableCell', {
     filter: ['th', 'td'],
     replacement: function (content, node) {
-      return cell(content, node as Element)
+      return cell(normalizeTableCellContent(content), node as Element)
     }
   })
 
@@ -339,6 +358,7 @@ function addExtensionRules(turndownService: TurndownService): void {
       try {
         if (node.nodeName !== 'TABLE') return false
         const table = node as Element
+        if (hasMergedCells(table)) return false
         const firstRow = getFirstRow(table)
         if (!firstRow) return false
         return isHeadingRow(firstRow)
@@ -448,6 +468,7 @@ function addExtensionRules(turndownService: TurndownService): void {
     try {
       if (node.nodeName !== 'TABLE') return false
       const table = node as Element
+      if (hasMergedCells(table)) return true
       const firstRow = getFirstRow(table)
       if (!firstRow) return true
       return !isHeadingRow(firstRow)
@@ -605,8 +626,11 @@ function htmlToMarkdownSimple(html: string): string {
   // LaTeX 公式 - 行内
   md = md.replace(/<script[^>]*type=["']math\/tex["'][^>]*>([\s\S]*?)<\/script>/gi, ' $$$$$1$$$$ ')
 
-  // 移除其他标签
-  md = md.replace(/<\/?[^>]+(>|$)/g, '')
+  // 移除其他标签（保留表格相关结构，避免 rowspan/colspan 表格被降级/丢失）
+  md = md.replace(
+    /<\/?(?!table\b|thead\b|tbody\b|tfoot\b|tr\b|th\b|td\b|caption\b|colgroup\b|col\b)[^>]+(>|$)/g,
+    ''
+  )
 
   // 解码 HTML 实体
   md = md.replace(/&amp;/g, '&')
@@ -652,6 +676,11 @@ function convertTables(html: string): string {
 
   // 匹配整个表格
   return html.replace(/<table[^>]*>([\s\S]*?)<\/table>/gi, (_, tableContent) => {
+    // 合并单元格无法安全转换为 markdown 表格，保留 HTML 结构
+    if (/<t[hd][^>]*\b(?:rowspan|colspan)\s*=/i.test(tableContent)) {
+      return `<table>${tableContent}</table>`
+    }
+
     // 检查是否有表头（thead 或 第一行全是 th）
     const hasTheadMatch = tableContent.match(/<thead[^>]*>([\s\S]*?)<\/thead>/i)
     const rows: string[][] = []

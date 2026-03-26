@@ -69,6 +69,9 @@ export interface PreprocessConfig {
   /** 将表格转换为文本（用 | 分隔列，适用于不支持表格的平台） */
   convertTablesToText?: boolean
 
+  /** 将表格渲染为 PNG 图片（data URL），并用 `<img>` 替换 table（smzdm 等强清洗平台使用） */
+  convertTablesToPng?: boolean
+
   /** 保留 <style> 标签（CLI 同步自定义 HTML 时使用） */
   keepStyles?: boolean
 

@@ -373,7 +373,7 @@ export function EditorApp() {
         for (const platformId of platformsArr) {
           const config = configs[platformId]
           if (config) {
-            platformContents[platformId] = preprocessForPlatform(rawHtml, config)
+            platformContents[platformId] = await preprocessForPlatform(rawHtml, config)
           } else {
             // 无预处理配置，直接使用原始 HTML
             platformContents[platformId] = {
@@ -443,7 +443,7 @@ export function EditorApp() {
         for (const platformId of failedPlatforms) {
           const config = configs[platformId]
           if (config) {
-            platformContents[platformId] = preprocessForPlatform(rawHtml, config)
+            platformContents[platformId] = await preprocessForPlatform(rawHtml, config)
           } else {
             // 无预处理配置，直接使用原始 HTML
             platformContents[platformId] = {

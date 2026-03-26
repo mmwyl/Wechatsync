@@ -52,6 +52,11 @@ export class SmzdmAdapter extends CodeAdapter {
   /** 预处理配置: 使用 HTML 格式 */
   readonly preprocessConfig = {
     outputFormat: 'html' as const,
+    // smzdm 草稿端会对 Word 导入的 table 做二次清洗，导致结构错乱。
+    // 为保留样式，这里直接把 table 渲染为 PNG，并让后续的图片上传逻辑接管替换。
+    convertTablesToPng: true,
+    // 渲染表格为图片需要尽量保留样式标签，避免丢失边框/布局。
+    keepStyles: true,
   }
 
   /** 当前文章 ID（用于图片上传） */
@@ -146,6 +151,10 @@ export class SmzdmAdapter extends CodeAdapter {
           onProgress: options?.onImageProgress,
         }
       )
+
+      // Word 导入的表格通常带有复杂结构/样式，提交到 smzdm 后会被二次清洗并造成错位。
+      // 这里在发布前先标准化为轻量 table 结构，提升草稿回显一致性。
+      content = this.normalizeTablesForSmzdm(content)
 
       // 对正文 HTML 中的图片做结构封装，匹配 smzdm 投稿编辑器期望的 wrapper 结构
       content = this.wrapImagesForSmzdm(content)
@@ -492,6 +501,18 @@ export class SmzdmAdapter extends CodeAdapter {
         }
       }
 
+      const uploadExtFromMime = (mime: string): string => {
+        const m = mime.toLowerCase()
+        if (m.includes('png')) return 'png'
+        if (m.includes('gif')) return 'gif'
+        if (m.includes('webp')) return 'webp'
+        if (m.includes('jpeg') || m.includes('jpg')) return 'jpg'
+        return 'jpg'
+      }
+
+      const mimeForExt = (blob.type || dataUriMime || '').trim() || 'image/png'
+      const uploadExt = uploadExtFromMime(mimeForExt)
+
       // 历史版本编辑器存在两种上传路径，优先使用 /api，404 时回退 /post/api
       const uploadUrls = [
         'https://post.smzdm.com/api/images/upload/local',
@@ -501,7 +522,7 @@ export class SmzdmAdapter extends CodeAdapter {
       for (const uploadUrl of uploadUrls) {
         // 每次重建 FormData，避免请求体在某些运行时被消费后重试失败
         const formData = new FormData()
-        formData.append('imgFile', blob, `image_${Date.now()}.jpg`)
+        formData.append('imgFile', blob, `image_${Date.now()}.${uploadExt}`)
         formData.append('id', 'WU_FILE_0')
         // type 字段用于匹配服务端校验；对 data URI 的情况尽量写入解析到的 mime
         formData.append('type', blob.type || (dataUriMime || 'image/png'))
@@ -578,8 +599,50 @@ export class SmzdmAdapter extends CodeAdapter {
 
       if (!src) return imgTag
 
-      const sanitizedImgTag = `<img src="${src}">`
+      // table 渲染为 PNG 时会打标记：为避免图片在编辑器中按“原始像素尺寸”导致溢出，这里补上自适应样式
+      const isTableImg = /data-wcs-table-img\s*=/i.test(imgTag)
+      const tableImgStyle = isTableImg ? ' style="max-width:100%;height:auto;"' : ''
+      const sanitizedImgTag = `<img src="${src}"${tableImgStyle}>`
       return `<div class="${wrapperClass}">${sanitizedImgTag}</div>`
+    })
+  }
+
+  /**
+   * smzdm 草稿保存接口会清洗富文本 HTML。
+   * 对 Word 导入出来的复杂表格（figure/colgroup/thead/大量 style）做降级，
+   * 避免清洗后丢失单元格层级导致“竖排错乱”。
+   */
+  private normalizeTablesForSmzdm(html: string): string {
+    let normalized = html
+      // 编辑器有时会把 table 包在 figure 里，提交后该层可能被剥离并打乱结构，先主动解包
+      .replace(/<figure[^>]*>\s*(<table[\s\S]*?<\/table>)\s*<\/figure>/gi, '$1')
+      // 去掉对结构无意义且容易触发清洗分支的 colgroup
+      .replace(/<colgroup[\s\S]*?<\/colgroup>/gi, '')
+
+    return normalized.replace(/<table\b[^>]*>[\s\S]*?<\/table>/gi, (tableBlock) => {
+      // 清理外围属性，避免内联样式被平台清洗时波及结构
+      let simple = tableBlock
+        .replace(/<table\b[^>]*>/i, '<table>')
+        .replace(/<\/?thead\b[^>]*>/gi, '')
+        .replace(/<\/?tbody\b[^>]*>/gi, '')
+        .replace(/<\/?tfoot\b[^>]*>/gi, '')
+        .replace(/<tr\b[^>]*>/gi, '<tr>')
+        .replace(/<th\b[^>]*>/gi, '<td>')
+        .replace(/<\/th>/gi, '</td>')
+        .replace(/<td\b[^>]*>/gi, '<td>')
+        // 单元格内的段落改为 <br> 分行，避免段落标签在清洗时被拆成块级节点
+        .replace(/<td>\s*<p\b[^>]*>/gi, '<td>')
+        .replace(/<\/p>\s*<\/td>/gi, '</td>')
+        .replace(/<\/p>\s*<p\b[^>]*>/gi, '<br>')
+        // 去掉空白单元格中的冗余空标签
+        .replace(/<td>\s*(?:<br\s*\/?>|&nbsp;|\s)*<\/td>/gi, '<td></td>')
+
+      const hasRow = /<tr>[\s\S]*?<\/tr>/i.test(simple)
+      if (!hasRow) return tableBlock
+
+      // 统一包装 tbody，降低平台解析分支差异
+      const rows = (simple.match(/<tr>[\s\S]*?<\/tr>/gi) || []).join('')
+      return `<table><tbody>${rows}</tbody></table>`
     })
   }
 }
